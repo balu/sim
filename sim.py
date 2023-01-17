@@ -125,8 +125,48 @@ class InvalidProgram(Exception):
     pass
 
 T = TypeVar('T')
-EnvironmentType = MutableMapping[str, T] | None
+Env = MutableMapping[str, T]
+@dataclass
+class EnvironmentType(MutableMapping[str, T]):
+    envs: List[Env]
 
+    def __init__(self):
+        self.envs = [{}]
+
+    def begin_scope(self):
+        self.envs.append({})
+
+    def end_scope(self):
+        self.envs.pop()
+
+    def __getitem__(self, k):
+        for env in reversed(self.envs):
+            try:
+                x = env[k]
+                return x
+            except:
+                pass
+
+    def __setitem__(self, k, v):
+        for env in reversed(self.envs):
+            if k in env:
+                env[k] = v
+                return
+        self.envs[-1][k] = v
+
+    def __delitem__(self, k):
+        for env in reversed(self.envs):
+            if k in env:
+                del env[k]
+
+    def __iter__(self):
+        from itertools import chain
+        return chain.from_iterable(reversed(self.envs))
+
+    def __len__(self):
+        from itertools import accumulate
+        return accumulate(map(len, self.envs))
+ 
 arithmetic_ops = [ "+", "-", "*", "/" ]
 cmp_ops        = [ "<", ">", "≤", "≥" ]
 eq_ops         = [ "=", "≠" ]
@@ -140,7 +180,7 @@ def typecheck (
         environment: EnvironmentType[SimType] = None
 ):
     if environment is None:
-        environment = {}
+        environment = EnvironmentType[SimType]()
 
     def typecheck_(p: AST):
         return typecheck(p, environment)
@@ -207,12 +247,20 @@ def typecheck (
             return BinOp(op, tleft, tright, BoolType())
         case Let(Variable(name), e1, e2):
             te1 = typecheck_(e1)
-            te2 = typecheck(e2, environment | { name: te1.type })
-            return Let(Variable(name, te1.type), te1, te2, te2.type)
+            environment.begin_scope()
+            environment[name] = te1.type
+            te2 = typecheck_(e2)
+            r = Let(Variable(name, te1.type), te1, te2, te2.type)
+            environment.end_scope()
+            return r
         case LetMut(Variable(name), e1, e2):
             te1 = typecheck_(e1)
-            te2 = typecheck(e2, environment | { name: RefType(te1.type) })
-            return LetMut(Variable(name, RefType(te1.type)), te1, te2, te2.type)
+            environment.begin_scope()
+            environment[name] = RefType(te1.type)
+            te2 = typecheck_(e2)
+            r = LetMut(Variable(name, RefType(te1.type)), te1, te2, te2.type)
+            environment.end_scope()
+            return r
         case IfElse(condition, iftrue, iffalse):
             tc = typecheck_(condition)
             if tc.type != BoolType():
@@ -250,7 +298,7 @@ def typecheck (
             if tc.type != BoolType():
                 raise InvalidProgram()
             tb = typecheck_(body)
-            return While(cond, body, UnitType())
+            return While(tc, tb, UnitType())
         case _:
             raise InvalidProgram()
 
@@ -268,7 +316,7 @@ def eval (
         environment: EnvironmentType[Value] = None
 ) -> Value:
     if environment is None:
-        environment = {}
+        environment = EnvironmentType[Value]()
 
     def eval_(p):
         return eval(p, environment)
@@ -330,9 +378,11 @@ def eval (
                 return eval_(iffalse)
         case Let(Variable(name), e1, e2) | LetMut(Variable(name), e1, e2):
             ve1 = eval_(e1)
-            return eval(e2, environment | { name: ve1 })
-        case Get(Variable(name)):
-            return environment[name]
+            environment.begin_scope()
+            environment[name] = ve1
+            ve2 = eval_(e2)
+            environment.end_scope()
+            return ve2
         case Put(Variable(name), e):
             environment[name] = eval_(e)
             return None
@@ -349,30 +399,42 @@ def eval (
             raise InvalidProgram()
     raise InvalidProgram()
 
-def test_eval():
-    import pytest
+def test_fact():
     p = Variable("p")
     i = Variable("i")
     e = Put(p, BinOp("*", Get(p), Get(i)))
     f = Put(i, BinOp("+", Get(i), NumLiteral(1)))
-    g = LetMut (
-            p,
-            NumLiteral(1),
-            LetMut (
-                i,
-                NumLiteral(1),
-                Seq([
-                    While (
-                        BinOp("≤", Get(i), NumLiteral(10)),
-                        Seq([e, f])
-                    ),
-                    Get(p)
-                ])
-            )
-    )
-    assert eval(g) == 1*2*3*4*5*6*7*8*9*10
+    g = LetMut (p, NumLiteral(1),
+        LetMut (i, NumLiteral(1),
+            Seq([
+                While (
+                    BinOp("≤", Get(i), NumLiteral(10)),
+                    Seq([e, f])
+                ),
+                Get(p)
+            ])))
+    assert eval(typecheck(g)) == 1*2*3*4*5*6*7*8*9*10
 
+def test_mut_immut():
+    import pytest
     # Trying to mutate an immutable variable.
+    p = Variable("p")
     h = Let(p, NumLiteral(0), Put(p, BinOp("+", Get(p), 1)))
     with pytest.raises(InvalidProgram):
-        eval(h)
+        typecheck(h)
+
+def test_fib():
+    f0 = Variable("f0")
+    f1 = Variable("f1")
+    i  = Variable("i")
+    t  = Variable("t")
+    step1 = Put(f1, BinOp("+", Get(f0), Get(f1)))
+    step2 = Put(f0, t)
+    step3 = Put(i, BinOp("+", Get(i), NumLiteral(1)))
+    body = Let(t, Get(f1), Seq([step1, step2, step3]))
+    check = BinOp("≤", Get(i), NumLiteral(10))
+    loop  = While(check, body)
+    e = LetMut(f0, NumLiteral(0),
+        LetMut(f1, NumLiteral(1),
+        LetMut(i, NumLiteral(1), Seq([loop, Get(f1)]))))
+    assert eval(typecheck(e)) == 89
