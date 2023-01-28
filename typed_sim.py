@@ -52,9 +52,9 @@ Token = Num | Bool | Keyword | Identifier | Operator
 class EndOfTokens(Exception):
     pass
 
-keywords = "if then else end".split()
-symbolic_operators = "+ - × / < > <= >= = ≠".split()
-word_operators = "and or not quot rem"
+keywords = "if then else end while do done".split()
+symbolic_operators = "+ - × / < > ≤ ≥ = ≠".split()
+word_operators = "and or not quot rem".split()
 whitespace = " \t\n"
 
 def word_to_token(word):
@@ -68,9 +68,13 @@ def word_to_token(word):
         return Bool(False)
     return Identifier(word)
 
+class TokenError(Exception):
+    pass
+
 @dataclass
 class Lexer:
     stream: Stream
+    save: Token = None
 
     def from_stream(s):
         return Lexer(s)
@@ -107,7 +111,22 @@ class Lexer:
                     return self.next_token()
         except EndOfStream:
             raise EndOfTokens
- 
+
+    def peek_token(self) -> Token:
+        if self.save is not None:
+            return self.save
+        self.save = self.next_token()
+        return self.save
+
+    def advance(self):
+        assert self.save is not None
+        self.save = None
+
+    def match(self, expected):
+        if self.peek_token() == expected:
+            return self.advance()
+        raise TokenError()
+
     def __iter__(self):
         return self
 
@@ -117,6 +136,87 @@ class Lexer:
         except EndOfTokens:
             raise StopIteration
 
+@dataclass
+class Parser:
+    lexer: Lexer
+
+    def from_lexer(lexer):
+        return Parser(lexer)
+
+    def parse_if(self):
+        self.lexer.match(Keyword("if"))
+        c = self.parse_expr()
+        self.lexer.match(Keyword("then"))
+        t = self.parse_expr()
+        self.lexer.match(Keyword("else"))
+        f = self.parse_expr()
+        self.lexer.match(Keyword("end"))
+        return IfElse(c, t, f)
+
+    def parse_while(self):
+        self.lexer.match(Keyword("while"))
+        c = self.parse_expr()
+        self.lexer.match(Keyword("do"))
+        b = self.parse_expr()
+        self.lexer.match(Keyword("done"))
+        return While(c, b)
+
+    def parse_atom(self):
+        match self.lexer.peek_token():
+            case Identifier(name):
+                self.lexer.advance()
+                return Variable(name)
+            case Num(value):
+                self.lexer.advance()
+                return NumLiteral(value)
+            case Bool(value):
+                self.lexer.advance()
+                return BoolLiteral(value)
+
+    def parse_mult(self):
+        left = self.parse_atom()
+        while True:
+            match self.lexer.peek_token():
+                case Operator(op) if op in "×/":
+                    self.lexer.advance()
+                    m = self.parse_atom()
+                    left = BinOp(op, left, m)
+                case _:
+                    break
+        return left
+
+    def parse_add(self):
+        left = self.parse_mult()
+        while True:
+            match self.lexer.peek_token():
+                case Operator(op) if op in "+-":
+                    self.lexer.advance()
+                    m = self.parse_mult()
+                    left = BinOp(op, left, m)
+                case _:
+                    break
+        return left
+
+    def parse_cmp(self):
+        left = self.parse_add()
+        match self.lexer.peek_token():
+            case Operator(op) if op in "<>":
+                self.lexer.advance()
+                right = self.parse_add()
+                return BinOp(op, left, right)
+        return left
+
+    def parse_simple(self):
+        return self.parse_cmp()
+
+    def parse_expr(self):
+        match self.lexer.peek_token():
+            case Keyword("if"):
+                return self.parse_if()
+            case Keyword("while"):
+                return self.parse_while()
+            case _:
+                return self.parse_simple()
 
 @dataclass
 class NumType:
@@ -152,7 +252,16 @@ class IfElse:
     iffalse: 'AST'
     type: Optional[SimType] = None
 
-AST = NumLiteral | BoolLiteral | BinOp | IfElse
+@dataclass
+class While:
+    condition: 'AST'
+    body: 'AST'
+
+@dataclass
+class Variable:
+    name: str
+
+AST = NumLiteral | BoolLiteral | BinOp | IfElse | While | Variable
 
 TypedAST = NewType('TypedAST', AST)
 
@@ -204,6 +313,12 @@ def test_typecheck():
     with pytest.raises(TypeError):
         typecheck(BinOp("+", BinOp("×", NumLiteral(2), NumLiteral(3)), BinOp("<", NumLiteral(2), NumLiteral(3))))
 
-L = Lexer.from_stream(Stream.from_string("if 22 > 33 then 5+3 else e × x end"))
-for t in L:
-    print(t)
+def test_parse():
+    def parse(string):
+        return Parser.parse_expr (
+            Parser.from_lexer(Lexer.from_stream(Stream.from_string(string)))
+        )
+    # You should parse, evaluate and see whether the expression produces the expected value in your tests.
+    print(parse("if a+b > c×d then a×b - c + d else e×f/g end"))
+
+# test_parse() # Uncomment to see the created ASTs.
