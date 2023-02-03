@@ -2,6 +2,322 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Union, MutableMapping, List, TypeVar, Optional
 
+class EndOfStream(Exception):
+    pass
+
+@dataclass
+class Stream:
+    source: str
+    pos: int = 0
+
+    def from_string(source):
+        return Stream(source)
+
+    def next_char(self):
+        if self.pos >= len(self.source):
+            raise EndOfStream()
+        t = self.pos
+        self.pos += 1
+        return self.source[t]
+
+    def unget_char(self):
+        assert self.pos > 0
+        self.pos -= 1
+
+@dataclass
+class NumToken:
+    what: str
+
+@dataclass
+class BoolToken:
+    what: str
+
+@dataclass
+class StrToken:
+    what: str
+
+@dataclass
+class Keyword:
+    what: str
+
+@dataclass
+class Operator:
+    what: str
+
+@dataclass
+class Identifier:
+    what: str
+
+Token = (
+    NumToken |
+    BoolToken |
+    StrToken |
+    Keyword |
+    Operator |
+    Identifier
+)
+
+whitespace = " \t\n"
+symbol_operators = "+ - × / ^ < > ≥ ≤ = ≠ ~ ← !".split()
+keywords = "if then else end while do done begin let letmut in".split()
+word_operators = "and or not quot rem".split()
+
+class EndOfTokens(Exception):
+    pass
+
+def wordToken(word: str) -> Token:
+    if word in keywords:
+        return Keyword(word)
+    if word in word_operators:
+        return Operator(word)
+    if word == "True" or word == "False":
+        return BoolToken(word)
+    return Identifier(word)
+
+@dataclass
+class Lexer:
+    stream: Stream
+    save: Optional[Token] = None
+
+    def from_stream(stream):
+        return Lexer(stream)
+
+    def next_token(self) -> Token:
+        try:
+            match self.stream.get_char():
+                case c if c in whitespace:
+                    return self.next_token()
+                case c if c in symbol_operators:
+                    return Operator(c)
+                case '"':
+                    s = c
+                    try:
+                        while (c := self.stream.get_char()) != '"':
+                            s += c
+                        return StrToken(s)
+                    except EndOfStream:
+                        raise TokenError()
+                case c if c.isdigit():
+                    s = c
+                    try:
+                        while (c := self.stream.get_char()).isdigit():
+                            s += c
+                        self.stream.unget_char()
+                        return NumToken(s)
+                    except EndOfStream:
+                        return NumToken(s)
+                case c if c.isalpha():
+                    s = c
+                    try:
+                        while (c := self.stream.get_char()).isalpha():
+                            s += c
+                        self.stream.unget_char()
+                        return wordToken(s)
+                    except EndOfStream:
+                        return wordToken(s)
+        except EndOfStream:
+            raise EndOfTokens()
+
+    def peek_token(self) -> Token:
+        if self.save is not None:
+            return self.save
+        self.save = self.next_token()
+        return self.save
+
+    def advance(self):
+        assert self.save is not None
+        self.save = None
+
+    def match_token(self, expected: Token):
+        if self.save is None:
+            self.save = self.next_token()
+        if self.save == expected:
+            return self.advance()
+        raise TokenError()
+
+@dataclass
+class Parser:
+    lexer: Lexer
+
+    def from_lexer(lexer):
+        self.lexer = lexer
+
+    def parse_if(self):
+        self.lexer.match_token(Keyword("if"))
+        c = self.parse_expr()
+        self.lexer.match_token(Keyword("then"))
+        t = self.parse_expr()
+        self.lexer.match_token(Keyword("else"))
+        f = self.parse_expr()
+        self.lexer.match_token(Keyword("end"))
+        return IfElse(c, t, f)
+
+    def parse_while(self):
+        self.lexer.match_token(Keyword("while"))
+        c = self.parse_expr()
+        self.lexer.match_token(Keyword("do"))
+        b = self.parse_expr()
+        self.lexer.match_token("done")
+        return While(c, b)
+
+    def parse_let(self):
+        self.lexer.match_token(Keyword("let"))
+        v = self.parse_variable()
+        self.lexer.match_token(Operator("="))
+        e1 = self.parse_expr()
+        self.lexer.match_token(Keyword("in"))
+        e2 = self.parse_expr()
+        self.lexer.match_token(Keyword("end"))
+        return Let(v, e1, e2)
+
+    def parse_letmut(self):
+        self.lexer.match_token(Keyword("letmut"))
+        v = self.parse_variable()
+        self.lexer.match_token(Operator("="))
+        e1 = self.parse_expr()
+        self.lexer.match_token(Keyword("in"))
+        e2 = self.parse_expr()
+        self.lexer.match_token(Keyword("end"))
+        return LetMut(v, e1, e2)
+
+    def parse_seq(self):
+        self.lexer.match_token(Keyword("begin"))
+        seq = []
+        while True:
+            seq.append(self.parse_expr())
+            if self.lexer.peek_token() != Operator(";"):
+                break
+        self.lexer.match_token(Keyword("end"))
+        return Seq(seq)
+
+    def parse_atom(self):
+        match self.lexer.peek_token():
+            case NumToken(what):
+                return NumLiteral(what)
+            case BoolToken(what):
+                return BoolLiteral(what)
+            case StrToken(what):
+                return StrLiteral(what)
+            case Punctuation("("):
+                e = self.parse_expr()
+                self.lexer.match_token(Punctuation(")"))
+                return e
+
+    def parse_prefix(self):
+        prefix = "+-!"
+        match self.lexer.peek_token():
+            case Operator(op) if op in prefix:
+                e = self.parse_prefix()
+                return UnOp(op, e)
+            case _:
+                return self.parse_atom()
+
+    def parse_exp(self):
+        left = self.parse_prefix()
+        match self.lexer.peek_token():
+            case Operator("^"):
+                right = self.parse_exp()
+                return BinOp("^", left, right)
+            case _:
+                return left
+
+    def parse_mul(self):
+        mul = "× / quot rem".split()
+        left = self.parse_exp()
+        while True:
+            match self.lexer.peek_token():
+                case Operator(op) if op in mul:
+                    right = self.parse_exp()
+                    left = BinOp(op, left, right)
+                case _:
+                    return left
+
+    def parse_add(self):
+        add = "+-~"
+        left = self.parse_mul()
+        while True:
+            match self.lexer.peek_token():
+                case Operator(op) if op in add:
+                    right = self.parse_mul()
+                    left = BinOp(op, left, right)
+                case _:
+                    return left
+
+    def parse_cmp(self):
+        cmp = "<>≤≥"
+        left = self.parse_add()
+        match self.lexer.peek_token():
+            case Operator(op) if op in cmp:
+                right = self.parse_add()
+                return BinOp(op, left, right)
+            case _:
+                return left
+
+    def parse_logical_not(self):
+        match self.lexer.peek_token():
+            case Operator("not" as op):
+                e = self.parse_logical_not()
+                return UnOp(op, e)
+            case _:
+                return self.parse_cmp()
+
+    def parse_logical_and(self):
+        left = self.parse_logical_not()
+        while True:
+            match self.lexer.peek_token():
+                case Operator("and" as op):
+                    right = self.parse_logical_not()
+                    left = BinOp(op, left, right)
+                case _:
+                    return left
+
+    def parse_logical_or(self):
+        left = self.parse_logical_and()
+        while True:
+            match self.lexer.peek_token():
+                case Operator("or" as op):
+                    right = self.parse_logical_and()
+                    left = BinOp(op, left, right)
+                case _:
+                    return left
+
+    def parse_eq(self):
+        eq = "=≠"
+        left = self.parse_logical_or()
+        match self.lexer.peek_token():
+            case Operator(op) if op in eq:
+                right = self.parse_logical_or()
+                return BinOp(op, left, right)
+            case _:
+                return left
+
+    def parse_put(self):
+        left = self.parse_eq()
+        match self.lexer.peek_token():
+            case Operator("←"):
+                right = self.parse_eq()
+                return Put(left, right)
+            case _:
+                return left
+
+    def parse_simple():
+        return self.parse_put()
+
+    def parse_expr(self):
+        match self.lexer.peek_token():
+            case Keyword("if"):
+                return self.parse_if()
+            case Keyword("while"):
+                return self.parse_while()
+            case Keyword("let"):
+                return self.parse_let()
+            case Keyword("letmut"):
+                return self.parse_letmut()
+            case Keyword("begin"):
+                return self.parse_seq()
+            case _:
+                return self.parse_simple()
+
 @dataclass
 class FractionType:
     pass
@@ -166,7 +482,7 @@ class EnvironmentType(MutableMapping[str, T]):
     def __len__(self):
         from itertools import accumulate
         return accumulate(map(len, self.envs))
- 
+
 arithmetic_ops = [ "+", "-", "*", "/" ]
 cmp_ops        = [ "<", ">", "≤", "≥" ]
 eq_ops         = [ "=", "≠" ]
