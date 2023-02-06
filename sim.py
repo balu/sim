@@ -50,39 +50,72 @@ Value = Fraction
 class InvalidProgram(Exception):
     pass
 
-def eval(program: AST, environment: Mapping[str, Value] = None) -> Value:
+class Environment:
+    envs: List
+
+    def __init__(self):
+        self.envs = [{}]
+
+    def enter_scope(self):
+        self.envs.append({})
+
+    def exit_scope(self):
+        assert self.envs
+        self.envs.pop()
+
+    def add(self, name, value):
+        assert name not in self.envs[-1]
+        self.envs[-1][name] = value
+
+    def get(self, name):
+        for env in reversed(self.envs):
+            if name in env:
+                return env[name]
+        raise KeyError()
+
+    def update(self, name, value):
+        for env in reversed(self.envs):
+            if name in env:
+                env[name] = value
+                return
+        raise KeyError()
+
+def eval(program: AST, environment: Environment = None) -> Value:
     if environment is None:
-        environment = {}
+        environment = Environment()
+
+    def eval_(program):
+        return eval(program, environment)
+
     match program:
         case NumLiteral(value):
             return value
         case Variable(name):
-            if name in environment:
-                return environment[name]
-            raise InvalidProgram()
-        case Let(Variable(name), e1, e2):
-            v1 = eval(e1, environment)
-            return eval(e2, environment | { name: v1 })
+            return environment.get(name)
+        case Let(Variable(name), e1, e2) | LetMut(Variable(name), e1, e2):
+            v1 = eval_(e1)
+            environment.enter_scope()
+            environment.add(name, v1)
+            v2 = eval_(e2)
+            environment.exit_scope()
+            return v2
         case BinOp("+", left, right):
-            return eval(left, environment) + eval(right, environment)
+            return eval_(left) + eval_(right)
         case BinOp("-", left, right):
-            return eval(left, environment) - eval(right, environment)
+            return eval_(left) - eval_(right)
         case BinOp("*", left, right):
-            return eval(left, environment) * eval(right, environment)
+            return eval_(left) * eval_(right)
         case BinOp("/", left, right):
-            return eval(left, environment) / eval(right, environment)
-        case LetMut(Variable(name), e1, e2):
-            v1 = eval(e1, environment)
-            return eval(e2, environment | { name: v1 })
+            return eval_(left) / eval_(right)
         case Put(Variable(name), e):
-            environment[name] = eval(e, environment)
-            return environment[name]
+            environment.update(name, eval_(e))
+            return environment.get(name)
         case Get(Variable(name)):
-            return environment[name]
+            return environment.get(name)
         case Seq(things):
             v = None
             for thing in things:
-                v = eval(thing, environment)
+                v = eval_(thing)
             return v
 
     raise InvalidProgram()
