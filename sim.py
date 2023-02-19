@@ -43,7 +43,24 @@ class Get:
 class Seq:
     things: List['AST']
 
-AST = NumLiteral | BinOp | Variable | Let | LetMut | Put | Get | Seq
+@dataclass
+class LetFun:
+    name: 'AST'
+    params: List['AST']
+    body: 'AST'
+    expr: 'AST'
+
+@dataclass
+class FunCall:
+    fn: 'AST'
+    args: List['AST']
+
+AST = NumLiteral | BinOp | Variable | Let | LetMut | Put | Get | Seq | LetFun | FunCall
+
+@dataclass
+class FnObject:
+    params: List['AST']
+    body: 'AST'
 
 Value = Fraction
 
@@ -117,7 +134,23 @@ def eval(program: AST, environment: Environment = None) -> Value:
             for thing in things:
                 v = eval_(thing)
             return v
-
+        case LetFun(Variable(name), params, body, expr):
+            environment.enter_scope()
+            environment.add(name, FnObject(params, body))
+            v = eval_(expr)
+            environment.exit_scope()
+            return v
+        case FunCall(Variable(name), args):
+            fn = environment.get(name)
+            argv = []
+            for arg in args:
+                argv.append(eval_(arg))
+            environment.enter_scope()
+            for param, arg in zip(fn.params, argv):
+                environment.add(param.name, arg)
+            v = eval_(fn.body)
+            environment.exit_scope()
+            return v
     raise InvalidProgram()
 
 def test_eval():
@@ -152,3 +185,18 @@ def test_letmut():
     e1 = LetMut(b, NumLiteral(2), Put(a, BinOp("+", Get(a), Get(b))))
     e2 = LetMut(a, NumLiteral(1), Seq([e1, Get(a)]))
     assert eval(e2) == 3
+
+def test_letfun():
+    a = Variable("a")
+    b = Variable("b")
+    f = Variable("f")
+    g = BinOp (
+        "*",
+        FunCall(f, [NumLiteral(15), NumLiteral(2)]),
+        FunCall(f, [NumLiteral(12), NumLiteral(3)])
+    )
+    e = LetFun(
+        f, [a, b], BinOp("+", a, b),
+        g
+    )
+    assert eval(e) == (15+2)*(12+3)
