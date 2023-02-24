@@ -2,6 +2,13 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Union, Mapping, List
 
+currentID = 0
+
+def fresh():
+    global currentID
+    currentID = currentID + 1
+    return currentID
+
 @dataclass
 class NumLiteral:
     value: Fraction
@@ -14,9 +21,13 @@ class BinOp:
     left: 'AST'
     right: 'AST'
 
-@dataclass
+@dataclass(frozen=True)
 class Variable:
     name: str
+    id: int
+
+    def make(name):
+        return Variable(name, fresh())
 
 @dataclass
 class Let:
@@ -62,7 +73,7 @@ class FnObject:
     params: List['AST']
     body: 'AST'
 
-Value = Fraction
+Value = Fraction | FnObject
 
 class InvalidProgram(Exception):
     pass
@@ -97,6 +108,43 @@ class Environment:
                 return
         raise KeyError()
 
+def resolve(program: AST, environment: Environment = None) -> AST:
+    if environment is None:
+        environment = Environment()
+
+    def resolve_(program: AST) -> AST:
+        return resolve(program, environment)
+
+    match program:
+        case NumLiteral(_) as N:
+            return N
+        case Variable(name):
+            return environment.get(name)
+        case Let(Variable(name) as v, e1, e2):
+            re1 = resolve_(e1)
+            environment.enter_scope()
+            environment.add(name, v)
+            re2 = resolve_(e2)
+            environment.exit_scope()
+            return Let(v, re1, re2)
+        case LetFun(Variable(name) as v, params, body, expr):
+            environment.enter_scope()
+            environment.add(name, v)
+            environment.enter_scope()
+            for param in params:
+                environment.add(param.name, param)
+            rbody = resolve_(body)
+            environment.exit_scope()
+            rexpr = resolve_(expr)
+            environment.exit_scope()
+            return LetFun(v, params, rbody, rexpr)
+        case FunCall(fn, args):
+            rfn = resolve_(fn)
+            rargs = []
+            for arg in args:
+                rargs.append(resolve_(arg))
+            return FunCall(rfn, rargs)
+
 def eval(program: AST, environment: Environment = None) -> Value:
     if environment is None:
         environment = Environment()
@@ -107,12 +155,12 @@ def eval(program: AST, environment: Environment = None) -> Value:
     match program:
         case NumLiteral(value):
             return value
-        case Variable(name):
-            return environment.get(name)
-        case Let(Variable(name), e1, e2) | LetMut(Variable(name), e1, e2):
+        case Variable(_) as v:
+            return environment.get(v)
+        case Let(Variable(_) as v, e1, e2) | LetMut(Variable(_) as v, e1, e2):
             v1 = eval_(e1)
             environment.enter_scope()
-            environment.add(name, v1)
+            environment.add(v, v1)
             v2 = eval_(e2)
             environment.exit_scope()
             return v2
@@ -124,30 +172,30 @@ def eval(program: AST, environment: Environment = None) -> Value:
             return eval_(left) * eval_(right)
         case BinOp("/", left, right):
             return eval_(left) / eval_(right)
-        case Put(Variable(name), e):
-            environment.update(name, eval_(e))
-            return environment.get(name)
-        case Get(Variable(name)):
-            return environment.get(name)
+        case Put(Variable(_) as v, e):
+            environment.update(v, eval_(e))
+            return environment.get(v)
+        case Get(Variable(_) as v):
+            return environment.get(v)
         case Seq(things):
             v = None
             for thing in things:
                 v = eval_(thing)
             return v
-        case LetFun(Variable(name), params, body, expr):
+        case LetFun(Variable(_) as v, params, body, expr):
             environment.enter_scope()
-            environment.add(name, FnObject(params, body))
+            environment.add(v, FnObject(params, body))
             v = eval_(expr)
             environment.exit_scope()
             return v
-        case FunCall(Variable(name), args):
-            fn = environment.get(name)
+        case FunCall(Variable(_) as v, args):
+            fn = environment.get(v)
             argv = []
             for arg in args:
                 argv.append(eval_(arg))
             environment.enter_scope()
             for param, arg in zip(fn.params, argv):
-                environment.add(param.name, arg)
+                environment.add(param, arg)
             v = eval_(fn.body)
             environment.exit_scope()
             return v
@@ -200,3 +248,22 @@ def test_letfun():
         g
     )
     assert eval(e) == (15+2)*(12+3)
+
+
+def test_resolve():
+    import pprint
+    pp = pprint.PrettyPrinter(indent=4)
+    e = Let(Variable.make("a"), NumLiteral(0), Variable.make("a"))
+    # pp.pprint(e)
+    re = resolve(e)
+    # pp.pprint(re)
+
+    e = LetFun(Variable.make("foo"), [Variable.make("a")], FunCall(Variable.make("foo"), [Variable.make("a")]),
+               Let(Variable.make("g"), Variable.make("foo"),
+                   LetFun(Variable.make("foo"), [Variable.make("a")], NumLiteral(0),
+                          FunCall(Variable.make("g"), [NumLiteral(0)]))))
+    pp.pprint(e)
+    pp.pprint(r := resolve(e))
+    print(eval(r))
+
+test_resolve()

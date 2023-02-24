@@ -11,6 +11,8 @@ def fact(n):
 
 print(fact(10))
 
+# futuredef odd(n)
+
 def even(n):
     match n:
         case 0: return True
