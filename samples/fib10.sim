@@ -1,0 +1,12 @@
+letmut f0 = 0 in
+letmut f1 = 1 in
+letmut i = 1 in begin
+  while !i ≤ 10 do begin
+    let t = !f1 in begin
+      f1 ← !f0 + !f1;
+      f0 ← t
+    end end;
+    i ← !i+1
+  end done;
+  !f1
+end end end end

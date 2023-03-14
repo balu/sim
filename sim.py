@@ -13,7 +13,10 @@ class Stream:
     def from_string(source):
         return Stream(source)
 
-    def next_char(self):
+    def from_file(filename):
+        return Stream(open(filename).read())
+
+    def get_char(self):
         if self.pos >= len(self.source):
             raise EndOfStream()
         t = self.pos
@@ -48,17 +51,23 @@ class Operator:
 class Identifier:
     what: str
 
+@dataclass
+class Punctuation:
+    what: str
+
 Token = (
-    NumToken |
-    BoolToken |
-    StrToken |
-    Keyword |
-    Operator |
-    Identifier
+      NumToken
+    | BoolToken
+    | StrToken
+    | Keyword
+    | Operator
+    | Identifier
+    | Punctuation
 )
 
 whitespace = " \t\n"
-symbol_operators = "+ - × / ^ < > ≥ ≤ = ≠ ~ ← !".split()
+symbol_operators = "+ - × / ^ < > ≥ ≤ = ≠ ~ ← ! ;".split()
+punctuation = "( )".split()
 keywords = "if then else end while do done begin let letmut in".split()
 word_operators = "and or not quot rem".split()
 
@@ -89,6 +98,8 @@ class Lexer:
                     return self.next_token()
                 case c if c in symbol_operators:
                     return Operator(c)
+                case c if c in punctuation:
+                    return Punctuation(c)
                 case '"':
                     s = c
                     try:
@@ -109,8 +120,10 @@ class Lexer:
                 case c if c.isalpha():
                     s = c
                     try:
-                        while (c := self.stream.get_char()).isalpha():
+                        c = self.stream.get_char()
+                        while c.isalpha() or c.isdigit():
                             s += c
+                            c = self.stream.get_char()
                         self.stream.unget_char()
                         return wordToken(s)
                     except EndOfStream:
@@ -140,7 +153,7 @@ class Parser:
     lexer: Lexer
 
     def from_lexer(lexer):
-        self.lexer = lexer
+        return Parser(lexer)
 
     def parse_if(self):
         self.lexer.match_token(Keyword("if"))
@@ -157,7 +170,7 @@ class Parser:
         c = self.parse_expr()
         self.lexer.match_token(Keyword("do"))
         b = self.parse_expr()
-        self.lexer.match_token("done")
+        self.lexer.match_token(Keyword("done"))
         return While(c, b)
 
     def parse_let(self):
@@ -187,18 +200,36 @@ class Parser:
             seq.append(self.parse_expr())
             if self.lexer.peek_token() != Operator(";"):
                 break
+            self.lexer.advance()
         self.lexer.match_token(Keyword("end"))
         return Seq(seq)
 
+    def parse_variable(self):
+        match self.lexer.peek_token():
+            case Identifier(name):
+                self.lexer.advance()
+                return Variable(name)
+            case _:
+                raise InvalidProgram()
+
     def parse_atom(self):
         match self.lexer.peek_token():
+            case Identifier(name):
+                self.lexer.advance()
+                return Variable(name)
             case NumToken(what):
-                return NumLiteral(what)
+                self.lexer.advance()
+                return NumLiteral(int(what))
             case BoolToken(what):
-                return BoolLiteral(what)
+                self.lexer.advance()
+                match what:
+                    case "True": return BoolLiteral(True)
+                    case "False": return BoolLiteral(False)
             case StrToken(what):
+                self.lexer.advance()
                 return StrLiteral(what)
             case Punctuation("("):
+                self.lexer.advance()
                 e = self.parse_expr()
                 self.lexer.match_token(Punctuation(")"))
                 return e
@@ -207,6 +238,7 @@ class Parser:
         prefix = "+-!"
         match self.lexer.peek_token():
             case Operator(op) if op in prefix:
+                self.lexer.advance()
                 e = self.parse_prefix()
                 return UnOp(op, e)
             case _:
@@ -216,6 +248,7 @@ class Parser:
         left = self.parse_prefix()
         match self.lexer.peek_token():
             case Operator("^"):
+                self.lexer.advance()
                 right = self.parse_exp()
                 return BinOp("^", left, right)
             case _:
@@ -227,6 +260,7 @@ class Parser:
         while True:
             match self.lexer.peek_token():
                 case Operator(op) if op in mul:
+                    self.lexer.advance()
                     right = self.parse_exp()
                     left = BinOp(op, left, right)
                 case _:
@@ -238,6 +272,7 @@ class Parser:
         while True:
             match self.lexer.peek_token():
                 case Operator(op) if op in add:
+                    self.lexer.advance()
                     right = self.parse_mul()
                     left = BinOp(op, left, right)
                 case _:
@@ -248,6 +283,7 @@ class Parser:
         left = self.parse_add()
         match self.lexer.peek_token():
             case Operator(op) if op in cmp:
+                self.lexer.advance()
                 right = self.parse_add()
                 return BinOp(op, left, right)
             case _:
@@ -256,6 +292,7 @@ class Parser:
     def parse_logical_not(self):
         match self.lexer.peek_token():
             case Operator("not" as op):
+                self.lexer.advance()
                 e = self.parse_logical_not()
                 return UnOp(op, e)
             case _:
@@ -266,6 +303,7 @@ class Parser:
         while True:
             match self.lexer.peek_token():
                 case Operator("and" as op):
+                    self.lexer.advance()
                     right = self.parse_logical_not()
                     left = BinOp(op, left, right)
                 case _:
@@ -276,6 +314,7 @@ class Parser:
         while True:
             match self.lexer.peek_token():
                 case Operator("or" as op):
+                    self.lexer.advance()
                     right = self.parse_logical_and()
                     left = BinOp(op, left, right)
                 case _:
@@ -286,6 +325,7 @@ class Parser:
         left = self.parse_logical_or()
         match self.lexer.peek_token():
             case Operator(op) if op in eq:
+                self.lexer.advance()
                 right = self.parse_logical_or()
                 return BinOp(op, left, right)
             case _:
@@ -295,12 +335,13 @@ class Parser:
         left = self.parse_eq()
         match self.lexer.peek_token():
             case Operator("←"):
+                self.lexer.advance()
                 right = self.parse_eq()
                 return Put(left, right)
             case _:
                 return left
 
-    def parse_simple():
+    def parse_simple(self):
         return self.parse_put()
 
     def parse_expr(self):
@@ -364,7 +405,7 @@ class Unit:
 class UnOp:
     operator: str
     operand: 'AST'
-    type: SimType
+    type: Optional[SimType] = None
 
 @dataclass
 class BinOp:
@@ -405,11 +446,6 @@ class LetMut:
     type: Optional[SimType] = None
 
 @dataclass
-class Get:
-    var: 'AST'
-    type: Optional[SimType] = None
-
-@dataclass
 class Put:
     var: 'AST'
     val: 'AST'
@@ -431,11 +467,13 @@ AST = NumLiteral \
     | IfElse \
     | Seq \
     | LetMut \
-    | Get \
     | Put \
     | While
 
 Value = Fraction | bool | str | None
+
+class TokenError(Exception):
+    pass
 
 class InvalidProgram(Exception):
     pass
@@ -518,6 +556,16 @@ def typecheck (
                     raise InvalidProgram()
                 case t:
                     return Variable(name, t)
+        case UnOp("!", Variable(name)):
+            if name not in environment:
+                raise InvalidProgram()
+            match environment[name]:
+                case RefType(base) as type:
+                    return UnOp("!", Variable(name, type), base)
+                case _:
+                    raise InvalidProgram()
+        case UnOp("!", other):
+            raise InvalidProgram()
         case UnOp(op, v):
             tv = typecheck_(v)
             match op:
@@ -589,14 +637,6 @@ def typecheck (
         case Seq(things):
             tthings = list(map(lambda t: typecheck_(t), things))
             return Seq(tthings, tthings[-1].type)
-        case Get(Variable(name)):
-            if name not in environment:
-                raise InvalidProgram()
-            match environment[name]:
-                case RefType(base) as type:
-                    return Get(Variable(name, type), base)
-                case _:
-                    raise InvalidProgram()
         case Put(Variable(name), val):
             if name not in environment:
                 raise InvalidProgram()
@@ -639,14 +679,14 @@ def eval (
 
     match program:
         case NumLiteral(value):
-            return value
+            return Fraction(int(value), 1)
         case BoolLiteral(value):
             return value
         case StrLiteral(value):
             return value
         case Unit():
             return None
-        case Variable(name) | Get(Variable(name)):
+        case Variable(name) | UnOp("!", Variable(name)):
             if name not in environment:
                 raise InvalidProgram()
             return environment[name]
@@ -718,16 +758,16 @@ def eval (
 def test_fact():
     p = Variable("p")
     i = Variable("i")
-    e = Put(p, BinOp("*", Get(p), Get(i)))
-    f = Put(i, BinOp("+", Get(i), NumLiteral(1)))
+    e = Put(p, BinOp("*", UnOp("!", p), UnOp("!", i)))
+    f = Put(i, BinOp("+", UnOp("!", i), NumLiteral(1)))
     g = LetMut (p, NumLiteral(1),
         LetMut (i, NumLiteral(1),
             Seq([
                 While (
-                    BinOp("≤", Get(i), NumLiteral(10)),
+                    BinOp("≤", UnOp("!", i), NumLiteral(10)),
                     Seq([e, f])
                 ),
-                Get(p)
+                UnOp("!", p)
             ])))
     assert eval(typecheck(g)) == 1*2*3*4*5*6*7*8*9*10
 
@@ -735,7 +775,7 @@ def test_mut_immut():
     import pytest
     # Trying to mutate an immutable variable.
     p = Variable("p")
-    h = Let(p, NumLiteral(0), Put(p, BinOp("+", Get(p), 1)))
+    h = Let(p, NumLiteral(0), Put(p, BinOp("+", UnOp("!", p), 1)))
     with pytest.raises(InvalidProgram):
         typecheck(h)
 
@@ -744,13 +784,23 @@ def test_fib():
     f1 = Variable("f1")
     i  = Variable("i")
     t  = Variable("t")
-    step1 = Put(f1, BinOp("+", Get(f0), Get(f1)))
+    step1 = Put(f1, BinOp("+", UnOp("!", f0), UnOp("!", f1)))
     step2 = Put(f0, t)
-    step3 = Put(i, BinOp("+", Get(i), NumLiteral(1)))
-    body = Let(t, Get(f1), Seq([step1, step2, step3]))
-    check = BinOp("≤", Get(i), NumLiteral(10))
+    step3 = Put(i, BinOp("+", UnOp("!", i), NumLiteral(1)))
+    body = Let(t, UnOp("!", f1), Seq([step1, step2, step3]))
+    check = BinOp("≤", UnOp("!", i), NumLiteral(10))
     loop  = While(check, body)
     e = LetMut(f0, NumLiteral(0),
         LetMut(f1, NumLiteral(1),
-        LetMut(i, NumLiteral(1), Seq([loop, Get(f1)]))))
+        LetMut(i, NumLiteral(1), Seq([loop, UnOp("!", f1)]))))
+    assert eval(typecheck(e)) == 89
+
+def test_fib_parse():
+    e = Parser.from_lexer (
+        Lexer.from_stream (
+            Stream.from_file (
+                "samples/fib10.sim"
+            )
+        )
+    ).parse_expr()
     assert eval(typecheck(e)) == 89
