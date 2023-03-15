@@ -1,0 +1,11 @@
+letmut sum = 0 in
+letmut i = 1 in
+  while !i < 1000 do
+    if !i rem 3 = 0 or !i rem 5 = 0 then
+      sum ← !sum + !i
+    else
+      pass
+    end;
+    i ← !i + 1
+  done
+end; !sum end
