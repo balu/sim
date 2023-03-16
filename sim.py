@@ -71,9 +71,9 @@ Token = (
 )
 
 whitespace = " \t\n"
-symbol_operators = "+ - × / ^ < > ≥ ≤ = ≠ ~ ← ! ;".split()
+symbol_operators = "+ - * / ^ < > ≥ ≤ = ≠ ~ ← ! ; :".split()
 punctuation = "( )".split()
-keywords = "if then else end while do done begin let letmut in".split()
+keywords = "if then else end while do done begin let letmut letfun in".split()
 word_operators = "and or not quot rem".split()
 
 class EndOfTokens(Exception):
@@ -155,6 +155,9 @@ class Lexer:
             return self.advance()
         raise TokenError()
 
+class ParseError(Exception):
+    pass
+
 @dataclass
 class Parser:
     lexer: Lexer
@@ -200,6 +203,45 @@ class Parser:
         self.lexer.match_token(Keyword("end"))
         return LetMut(v, e1, e2)
 
+    def parse_param(self):
+            v = self.parse_variable()
+            self.lexer.match_token(Operator(":"))
+            t = self.parse_type()
+            return TypeAssertion(v, t)
+
+    def parse_params(self):
+        params = []
+        self.lexer.match_token(Punctuation("("))
+        match self.lexer.peek_token():
+            case Punctuation(")"):
+                self.lexer.advance()
+                return params
+            case _:
+                while True:
+                    params.append(self.parse_param())
+                    match self.lexer.peek_token():
+                        case Punctuation(","):
+                            self.lexer.advance()
+                        case Punctuation(")"):
+                            self.lexer.advance()
+                            return params
+
+    def parse_type(self):
+        return self.parse_variable()
+
+    def parse_letfun(self):
+        self.lexer.match_token(Keyword("letfun"))
+        v = self.parse_variable()
+        params = self.parse_params()
+        self.lexer.match_token(Operator(":"))
+        rettype = self.parse_type()
+        self.lexer.match_token(Operator("="))
+        body = self.parse_expr()
+        self.lexer.match_token(Keyword("in"))
+        expr = self.parse_expr()
+        self.lexer.match_token(Keyword("end"))
+        return LetFun(v, params, rettype, body, expr)
+
     def parse_seqexpr(self):
         seq = []
         while True:
@@ -221,7 +263,7 @@ class Parser:
                 self.lexer.advance()
                 return Variable(name)
             case _:
-                raise InvalidProgram()
+                raise ParseError()
 
     def parse_atom(self):
         match self.lexer.peek_token():
@@ -246,6 +288,32 @@ class Parser:
                 e = self.parse_expr()
                 self.lexer.match_token(Punctuation(")"))
                 return e
+            case _:
+                raise ParseError()
+
+    def parse_call(self):
+        fn = self.parse_atom()
+        while True:
+            match self.lexer.peek_token():
+                case Punctuation("("):
+                    self.lexer.advance()
+                    args = []
+                    while True:
+                        match self.lexer.peek_token():
+                            case Punctuation(")"):
+                                self.lexer.advance()
+                                break
+                            case _:
+                                while True:
+                                    args.append(self.parse_expr())
+                                    match self.lexer.peek_token():
+                                        case Punctuation(","):
+                                            self.lexer.advance()
+                                        case _:
+                                            break
+                    return FunCall(fn, args)
+                case _:
+                    return fn
 
     def parse_prefix(self):
         prefix = "+-!"
@@ -255,7 +323,7 @@ class Parser:
                 e = self.parse_prefix()
                 return UnOp(op, e)
             case _:
-                return self.parse_atom()
+                return self.parse_call()
 
     def parse_exp(self):
         left = self.parse_prefix()
@@ -268,7 +336,7 @@ class Parser:
                 return left
 
     def parse_mul(self):
-        mul = "× / quot rem".split()
+        mul = "* / quot rem".split()
         left = self.parse_exp()
         while True:
             match self.lexer.peek_token():
@@ -344,12 +412,22 @@ class Parser:
                 case _:
                     return left
 
+    def parse_type_assert(self):
+        expr = self.parse_logical_or()
+        match self.lexer.peek_token():
+            case Operator(":"):
+                self.lexer.advance()
+                type = self.parse_logical_or()
+                return TypeAssertion(expr, type)
+            case _:
+                return expr
+
     def parse_put(self):
-        left = self.parse_logical_or()
+        left = self.parse_type_assert()
         match self.lexer.peek_token():
             case Operator("←"):
                 self.lexer.advance()
-                right = self.parse_logical_or()
+                right = self.parse_type_assert()
                 return Put(left, right)
             case _:
                 return left
@@ -367,6 +445,8 @@ class Parser:
                 return self.parse_let()
             case Keyword("letmut"):
                 return self.parse_letmut()
+            case Keyword("letfun"):
+                return self.parse_letfun()
             case Keyword("begin"):
                 return self.parse_seq()
             case _:
@@ -392,7 +472,12 @@ class UnitType:
 class RefType:
     base: 'SimType'
 
-SimType = FractionType | BoolType | StrType | UnitType | RefType
+@dataclass
+class FnType:
+    params: List['SimType']
+    ret: 'SIMType'
+
+SimType = FractionType | BoolType | StrType | UnitType | RefType | FnType
 
 @dataclass
 class NumLiteral:
@@ -444,6 +529,9 @@ class Variable:
     def __hash__(self):
         return hash(self.id)
 
+    def __eq__(self, other):
+        return self.id == other.id
+
 @dataclass
 class Let:
     var: 'AST'
@@ -482,18 +570,25 @@ class While:
     body: 'AST'
     type: Optional[SimType] = None
 
-AST = NumLiteral \
-    | BoolLiteral \
-    | StrLiteral \
-    | UnOp \
-    | BinOp \
-    | Variable \
-    | Let \
-    | IfElse \
-    | Seq \
-    | LetMut \
-    | Put \
-    | While
+@dataclass
+class LetFun:
+    name: 'AST'
+    params: List['AST']
+    rettype: 'AST'
+    body: 'AST'
+    expr: 'AST'
+    type: Optional[SimType] = None
+
+@dataclass
+class FunCall:
+    fn: 'AST'
+    args: List['AST']
+    type: Optional[SimType] = None
+
+@dataclass
+class TypeAssertion:
+    expr: 'AST'
+    type: SimType
 
 unique_id = -1
 
@@ -501,12 +596,44 @@ def fresh():
     global unique_id
     return (unique_id := unique_id + 1)
 
+@dataclass
+class FunObject:
+    params: List['AST']
+    body: 'AST'
+
 Value = Fraction | bool | str | None
+
+AST = (
+      NumLiteral
+    | BoolLiteral
+    | StrLiteral
+    | UnOp
+    | BinOp
+    | Variable
+    | Let
+    | IfElse
+    | Seq
+    | LetMut
+    | Put
+    | While
+    | LetFun
+    | FunCall
+    | TypeAssertion
+)
 
 class TokenError(Exception):
     pass
 
-class InvalidProgram(Exception):
+class ResolveError(Exception):
+    pass
+
+class TypeError(Exception):
+    pass
+
+class BUG(Exception):
+    pass
+
+class RunTimeError(Exception):
     pass
 
 T = TypeVar('T')
@@ -561,12 +688,22 @@ sc_ops         = [ "and", "or" ]
 def cmptype(t: SimType):
     return t in [FractionType(), StrType()]
 
+builtin_variables = {
+    #   name:  variable, type object, value object.
+    "num": (Variable("num"), FractionType(), None),
+    "bool": (Variable("bool"), BoolType(), None),
+    "str": (Variable("str"), StrType(), None),
+    "unit": (Variable("unit"), UnitType(), None),
+}
+
 def resolve (
         program: AST,
         environment: EnvironmentType[str, Variable] = None
 ) -> AST:
     if environment is None:
         environment = EnvironmentType()
+        for k, (v, _, _) in builtin_variables.items():
+            environment[k] = v
 
     def resolve_(program):
         return resolve(program, environment)
@@ -582,6 +719,8 @@ def resolve (
             rright = resolve_(right)
             return BinOp(op, rleft, rright)
         case Variable(name):
+            if name not in environment:
+                raise ResolveError()
             declared = environment[name]
             return Variable(name, declared.id)
         case Let(Variable(name) as v, e1, e2):
@@ -616,8 +755,35 @@ def resolve (
             rcond = resolve_(cond)
             rbody = resolve_(body)
             return While(rcond, rbody)
+        case LetFun(Variable(name) as v, params, rettype, body, expr):
+            environment.begin_scope()
+            environment[name] = v
+            environment.begin_scope()
+            rparams = []
+            for param in params:
+                match param.expr:
+                    case Variable(name):
+                        environment[name] = param.expr
+                    case _:
+                        raise BUG()
+                rparams.append(TypeAssertion(param.expr, resolve_(param.type)))
+            rrettype = resolve_(rettype)
+            rbody = resolve_(body)
+            environment.end_scope()
+            rexpr = resolve_(expr)
+            return LetFun(v, rparams, rrettype, rbody, rexpr)
+        case FunCall(Variable(_) as v, args):
+            rv = resolve_(v)
+            rargs = []
+            for arg in args:
+                rargs.append(resolve_(arg))
+            return FunCall(rv, rargs)
+        case TypeAssertion(expr, type):
+            rexpr = resolve_(expr)
+            rtype = resolve_(type)
+            return TypeAssertion(rexpr, rtype)
         case _:
-            raise InvalidProgram()
+            raise BUG()
 
 def typecheck (
         program: AST,
@@ -625,9 +791,20 @@ def typecheck (
 ):
     if environment is None:
         environment = EnvironmentType()
+        for _, (v, t, _) in builtin_variables.items():
+            environment[v] = t
 
     def typecheck_(p: AST):
         return typecheck(p, environment)
+
+    def typecheck_type(type: AST):
+        match type:
+            case Variable() as v:
+                if v not in environment:
+                    raise TypeError
+                return environment[v]
+            case _:
+                raise BUG()
 
     match program:
         case NumLiteral(value):
@@ -639,65 +816,63 @@ def typecheck (
         case Unit():
             return Unit(UnitType())
         case Variable(name, id) as v:
-            if name not in environment:
-                raise InvalidProgram()
             match environment[v]:
-                case RefType(_):
-                    raise InvalidProgram()
+                case RefType() | FnType():
+                    raise TypeError()
                 case t:
                     return Variable(name, id, t)
         case UnOp("!", Variable(name, id) as v):
             if name not in environment:
-                raise InvalidProgram()
+                raise TypeError()
             match environment[v]:
                 case RefType(base) as type:
                     return UnOp("!", Variable(name, id, type), base)
                 case _:
-                    raise InvalidProgram()
+                    raise TypeError()
         case UnOp("!", other):
-            raise InvalidProgram()
+            raise TypeError()
         case UnOp(op, v):
             tv = typecheck_(v)
             match op:
                 case "+" | "-":
                     if tv.type != FractionType():
-                        raise InvalidProgram()
+                        raise TypeError()
                     return UnOp(op, v, FractionType())
                 case "not":
                     if tv.type != BoolType():
-                        raise InvalidProgram()
+                        raise TypeError()
                     return UnOp(op, v, BoolType())
         case BinOp("~", left, right):
             tleft = typecheck_(left)
             tright = typecheck_(right)
             if tleft.type != StrType() or tright.type != StrType():
-                raise InvalidProgram()
+                raise TypeError()
             return BinOp("~", tleft, tright, StrType())
         case BinOp(op, left, right) if op in arithmetic_ops:
             tleft = typecheck_(left)
             tright = typecheck_(right)
             if tleft.type != FractionType() or tright.type != FractionType():
-                raise InvalidProgram()
+                raise TypeError()
             return BinOp(op, tleft, tright, FractionType())
         case BinOp(op, left, right) if op in cmp_ops:
             tleft = typecheck_(left)
             tright = typecheck_(right)
             if tleft.type != tright.type:
-                raise InvalidProgram()
+                raise TypeError()
             if not cmptype(tleft.type):
-                raise InvalidProgram()
+                raise TypeError()
             return BinOp(op, tleft, tright, BoolType())
         case BinOp(op, left, right) if op in eq_ops:
             tleft = typecheck_(left)
             tright = typecheck_(right)
             if tleft.type != tright.type:
-                raise InvalidProgram()
+                raise TypeError()
             return BinOp(op, tleft, tright, BoolType())
         case BinOp(op, left, right) if op in sc_ops:
             tleft = typecheck_(left)
             tright = typecheck_(right)
             if tleft.type != BoolType() or tright.type != BoolType():
-                raise InvalidProgram()
+                raise TypeError()
             return BinOp(op, tleft, tright, BoolType())
         case Let(Variable(name, id) as v, e1, e2):
             te1 = typecheck_(e1)
@@ -718,7 +893,7 @@ def typecheck (
         case IfElse(condition, iftrue, iffalse):
             tc = typecheck_(condition)
             if tc.type != BoolType():
-                raise InvalidProgram()
+                raise TypeError()
             tt = typecheck_(iftrue)
             tf = typecheck_(iffalse)
             if tt.type == tf.type:
@@ -729,24 +904,63 @@ def typecheck (
             return Seq(tthings, tthings[-1].type)
         case Put(Variable(name, id) as v, val):
             if v not in environment:
-                raise InvalidProgram()
+                raise TypeError()
             tv = environment[v]
             tval = typecheck_(val)
             match tv:
                 case RefType(base):
                     if base != tval.type:
-                        raise InvalidProgram()
+                        raise TypeError()
                     return Put(Variable(name, id, tv), tval, UnitType())
                 case _:
-                    raise InvalidProgram()
+                    raise TypeError()
         case While(cond, body):
             tc = typecheck_(cond)
             if tc.type != BoolType():
-                raise InvalidProgram()
+                raise TypeError()
             tb = typecheck_(body)
             return While(tc, tb, UnitType())
+        case LetFun(fnv, params, rettype, body, expr):
+            tparams = []
+            paramtypes = []
+            paramvars = []
+            for param in params:
+                match param:
+                    case TypeAssertion(Variable() as v, type):
+                        ttype = typecheck_type(type)
+                        v.type = ttype
+                        paramvars.append(v)
+                        paramtypes.append(ttype)
+                        tparams.append(TypeAssertion(v, ttype))
+                    case _:
+                        raise BUG()
+            environment.begin_scope()
+            trettype = typecheck_type(rettype)
+            environment[fnv] = fnv.type = FnType(paramtypes, trettype)
+            environment.begin_scope()
+            for v, type in zip(paramvars, paramtypes):
+                environment[v] = type
+            tb = typecheck_(body)
+            environment.end_scope()
+            te = typecheck_(expr)
+            environment.end_scope()
+            return LetFun(fnv, tparams, trettype, tb, te, te.type)
+        case FunCall(Variable(_) as v, args):
+            v.type = ftype = environment[v]
+            targs = []
+            for ptype, arg in zip(ftype.params, args):
+                targ = typecheck_(arg)
+                if targ.type != ptype:
+                    raise TypeError()
+                targs.append(targ)
+            return FunCall(v, targs, ftype.ret)
+        case TypeAssertion(expr, type):
+            texpr = typecheck_(expr)
+            if expr.type != type:
+                raise TypeError()
+            return TypeAssertion(texpr, type, type)
         case _:
-            raise InvalidProgram()
+            raise TypeError()
 
 def test_typecheck():
     e1 = NumLiteral(2)
@@ -777,12 +991,8 @@ def eval (
         case Unit():
             return None
         case Variable() as v:
-            if v not in environment:
-                raise InvalidProgram()
             return environment[v]
         case UnOp("!", Variable() as v):
-            if v not in environment:
-                raise InvalidProgram()
             return environment[v]
         case UnOp("+", e):
             return eval_(e)
@@ -813,17 +1023,17 @@ def eval (
                 case "*": return v1 * v2
                 case "/":
                     if v2 == 0:
-                        raise InvalidProgram()
+                        raise RunTimeError()
                     return v1 / v2
                 case "quot":
                     if v2 == 0:
-                        raise InvalidProgram()
+                        raise RunTimeError()
                     iv1 = int(v1)
                     iv2 = int(v2)
                     return Fraction(iv1 // iv2)
                 case "rem":
                     if v2 == 0:
-                        raise InvalidProgram()
+                        raise RunTimeError()
                     iv1 = int(v1)
                     iv2 = int(v2)
                     return Fraction(iv1 % iv2)
@@ -833,7 +1043,7 @@ def eval (
                 case "≥": return v1 >= v2
                 case "=": return v1 == v2
                 case "≠": return v1 != v2
-                case _: raise InvalidProgram()
+                case _: raise BUG()
         case IfElse(cond, iftrue, iffalse):
             vc = eval_(cond)
             if vc:
@@ -859,9 +1069,27 @@ def eval (
             while eval_(cond):
                 eval_(body)
             return None
+        case LetFun(v, params, _, body, expr):
+            environment.begin_scope()
+            paramvars = list(map(lambda p: p.expr, params))
+            environment[v] = FunObject(paramvars, body)
+            ve = eval_(expr)
+            environment.end_scope()
+            return ve
+        case FunCall(v, args):
+            fn = environment[v]
+            vargs = list(map(lambda arg: eval_(arg), args))
+            environment.begin_scope()
+            for param, varg in zip(fn.params, vargs):
+                environment[param] = varg
+            vresult = eval_(fn.body)
+            environment.end_scope()
+            return vresult
+        case TypeAssertion(expr):
+            return eval_(expr)
         case _:
-            raise InvalidProgram()
-    raise InvalidProgram()
+            raise BUG()
+    raise BUG()
 
 def test_fact():
     p = Variable("p")
@@ -884,7 +1112,7 @@ def test_mut_immut():
     # Trying to mutate an immutable variable.
     p = Variable("p")
     h = Let(p, NumLiteral(0), Put(p, BinOp("+", UnOp("!", p), 1)))
-    with pytest.raises(InvalidProgram):
+    with pytest.raises(TypeError):
         typecheck(h)
 
 def test_fib():
@@ -936,3 +1164,18 @@ def test_euler1():
         return sum
 
     assert euler1() == run_file("samples/euler1.sim")
+
+def test_const_fn():
+    assert 0 == run("letfun f(): num = 0 in f() end")
+
+def test_id_fn():
+    assert 3 == run("letfun id(n: num): num = n in id(1) + id(2) end")
+
+def test_inc_fn():
+    assert 3 == run("letfun inc(n: num): num = n+1 in inc(0) + inc(1) end")
+
+def test_multi_param_fn():
+    assert 10 == run("letfun lin(a: num, x: num, b: num): num = a * x + b in lin(2, 3, 4) end")
+
+def test_recursive_fn():
+    assert 3628800 == run("letfun fact(n: num): num = if n = 0 then 1 else n * fact(n-1) end in fact(10) end")
