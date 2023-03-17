@@ -1179,3 +1179,13 @@ def test_multi_param_fn():
 
 def test_recursive_fn():
     assert 3628800 == run("letfun fact(n: num): num = if n = 0 then 1 else n * fact(n-1) end in fact(10) end")
+
+def test_euler2():
+    def euler2():
+        sum, f0, f1 = 0, 1, 2
+        while f1 < 4000000:
+            if f1 % 2 == 0: sum += f1
+            f0, f1 = f1, f0+f1
+        return sum
+
+    assert euler2() == run_file("samples/euler2.sim")
