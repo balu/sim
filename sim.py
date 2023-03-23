@@ -73,7 +73,7 @@ Token = (
 whitespace = " \t\n"
 symbol_operators = "+ - * / ^ < > ≥ ≤ = ≠ ~ ← ! ; :".split()
 punctuation = "( )".split()
-keywords = "if then else end while do done begin let letmut letfun in".split()
+keywords = "if then else end while do done begin let mut fun in".split()
 word_operators = "and or not quot rem".split()
 
 class EndOfTokens(Exception):
@@ -170,10 +170,15 @@ class Parser:
         c = self.parse_expr()
         self.lexer.match_token(Keyword("then"))
         t = self.parse_seqexpr()
-        self.lexer.match_token(Keyword("else"))
-        f = self.parse_seqexpr()
-        self.lexer.match_token(Keyword("end"))
-        return IfElse(c, t, f)
+        match self.lexer.peek_token():
+            case Keyword("else"):
+                self.lexer.advance()
+                f = self.parse_seqexpr()
+                self.lexer.match_token(Keyword("end"))
+                return IfElse(c, t, f)
+            case Keyword("end"):
+                self.lexer.advance()
+                return IfElse(c, t, UnitLiteral())
 
     def parse_while(self):
         self.lexer.match_token(Keyword("while"))
@@ -185,6 +190,12 @@ class Parser:
 
     def parse_let(self):
         self.lexer.match_token(Keyword("let"))
+        match self.lexer.peek_token():
+            case Keyword("mut"): return self.parse_mut()
+            case Keyword("fun"): return self.parse_fun()
+            case _: return self.parse_plain_let()
+
+    def parse_plain_let(self):
         v = self.parse_variable()
         self.lexer.match_token(Operator("="))
         e1 = self.parse_expr()
@@ -193,8 +204,8 @@ class Parser:
         self.lexer.match_token(Keyword("end"))
         return Let(v, e1, e2)
 
-    def parse_letmut(self):
-        self.lexer.match_token(Keyword("letmut"))
+    def parse_mut(self):
+        self.lexer.match_token(Keyword("mut"))
         v = self.parse_variable()
         self.lexer.match_token(Operator("="))
         e1 = self.parse_expr()
@@ -229,8 +240,8 @@ class Parser:
     def parse_type(self):
         return self.parse_variable()
 
-    def parse_letfun(self):
-        self.lexer.match_token(Keyword("letfun"))
+    def parse_fun(self):
+        self.lexer.match_token(Keyword("fun"))
         v = self.parse_variable()
         params = self.parse_params()
         self.lexer.match_token(Operator(":"))
@@ -282,7 +293,7 @@ class Parser:
                 return StrLiteral(what)
             case UnitToken():
                 self.lexer.advance()
-                return Unit()
+                return UnitLiteral()
             case Punctuation("("):
                 self.lexer.advance()
                 e = self.parse_expr()
@@ -443,10 +454,6 @@ class Parser:
                 return self.parse_while()
             case Keyword("let"):
                 return self.parse_let()
-            case Keyword("letmut"):
-                return self.parse_letmut()
-            case Keyword("letfun"):
-                return self.parse_letfun()
             case Keyword("begin"):
                 return self.parse_seq()
             case _:
@@ -495,7 +502,7 @@ class StrLiteral:
     type: SimType = StrType()
 
 @dataclass
-class Unit:
+class UnitLiteral:
     type: SimType = UnitType()
     pass
 
@@ -607,6 +614,7 @@ AST = (
       NumLiteral
     | BoolLiteral
     | StrLiteral
+    | UnitLiteral
     | UnOp
     | BinOp
     | Variable
@@ -709,7 +717,7 @@ def resolve (
         return resolve(program, environment)
 
     match program:
-        case NumLiteral() | BoolLiteral() | StrLiteral() | Unit():
+        case NumLiteral() | BoolLiteral() | StrLiteral() | UnitLiteral():
             return program
         case UnOp(op, e):
             re = resolve_(e)
@@ -813,8 +821,8 @@ def typecheck (
             return BoolLiteral(value, BoolType())
         case StrLiteral(value):
             return StrLiteral(value, StrType())
-        case Unit():
-            return Unit(UnitType())
+        case UnitLiteral():
+            return UnitLiteral(UnitType())
         case Variable(name, id) as v:
             match environment[v]:
                 case RefType() | FnType():
@@ -988,7 +996,7 @@ def eval (
             return value
         case StrLiteral(value):
             return value
-        case Unit():
+        case UnitLiteral():
             return None
         case Variable() as v:
             return environment[v]
@@ -1153,7 +1161,7 @@ def run_file(f):
     return run(open(f).read())
 
 def test_simple_resolve():
-    assert 10 == run("letmut a = 5 in !a + !a end")
+    assert 10 == run("let mut a = 5 in !a + !a end")
 
 def test_euler1():
     def euler1():
@@ -1166,19 +1174,19 @@ def test_euler1():
     assert euler1() == run_file("samples/euler1.sim")
 
 def test_const_fn():
-    assert 0 == run("letfun f(): num = 0 in f() end")
+    assert 0 == run("let fun f(): num = 0 in f() end")
 
 def test_id_fn():
-    assert 3 == run("letfun id(n: num): num = n in id(1) + id(2) end")
+    assert 3 == run("let fun id(n: num): num = n in id(1) + id(2) end")
 
 def test_inc_fn():
-    assert 3 == run("letfun inc(n: num): num = n+1 in inc(0) + inc(1) end")
+    assert 3 == run("let fun inc(n: num): num = n+1 in inc(0) + inc(1) end")
 
 def test_multi_param_fn():
-    assert 10 == run("letfun lin(a: num, x: num, b: num): num = a * x + b in lin(2, 3, 4) end")
+    assert 10 == run("let fun lin(a: num, x: num, b: num): num = a * x + b in lin(2, 3, 4) end")
 
 def test_recursive_fn():
-    assert 3628800 == run("letfun fact(n: num): num = if n = 0 then 1 else n * fact(n-1) end in fact(10) end")
+    assert 3628800 == run("let fun fact(n: num): num = if n = 0 then 1 else n * fact(n-1) end in fact(10) end")
 
 def test_euler2():
     def euler2():
@@ -1189,3 +1197,6 @@ def test_euler2():
         return sum
 
     assert euler2() == run_file("samples/euler2.sim")
+
+def test_euler3():
+    assert 7 == run_file("samples/euler3.sim")
