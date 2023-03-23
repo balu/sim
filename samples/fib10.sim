@@ -1,6 +1,6 @@
-letmut f0 = 0 in
-letmut f1 = 1 in
-letmut i = 1 in
+let mut f0 = 0 in
+let mut f1 = 1 in
+let mut i = 1 in
   while !i ≤ 10 do
     let t = !f1 in
       f1 ← !f0 + !f1;

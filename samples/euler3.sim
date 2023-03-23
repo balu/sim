@@ -1,0 +1,12 @@
+let fun isprime(n : num) : bool =
+  let fun go(d : num) : bool = d * d > n or n rem d ≠ 0 and go(d+1) in go(2) end
+in
+  let innum = 35 in
+  let fun go(cur : num, max : num) : num =
+    if cur > innum then max
+    else
+      if innum rem cur ≠ 0 then go(cur+1, max)
+      else go(cur+1, if isprime(cur) then cur else max end) end
+    end
+  in go(2, 1) end end
+end

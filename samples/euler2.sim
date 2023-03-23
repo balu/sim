@@ -1,12 +1,10 @@
-letmut sum = 0 in
-letmut f0  = 1 in
-letmut f1  = 2 in
-letmut t   = 0 in
+let mut sum = 0 in
+let mut f0  = 1 in
+let mut f1  = 2 in
+let mut t   = 0 in
   while !f1 < 4000000 do
     if !f1 rem 2 = 0 then
       sum ← !sum + !f1
-    else
-      pass
     end;
     t ← !f1;
     f1 ← !f0 + !f1;
