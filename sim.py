@@ -59,6 +59,10 @@ class Identifier:
 class Punctuation:
     what: str
 
+@dataclass
+class EndToken:
+    pass
+
 Token = (
       NumToken
     | BoolToken
@@ -68,6 +72,7 @@ Token = (
     | Operator
     | Identifier
     | Punctuation
+    | EndToken
 )
 
 whitespace = " \t\n"
@@ -76,8 +81,6 @@ punctuation = "( )".split()
 keywords = "if then else end while do done begin let mut fun in".split()
 word_operators = "and or not quot rem".split()
 
-class EndOfTokens(Exception):
-    pass
 
 def wordToken(word: str) -> Token:
     if word in keywords:
@@ -136,7 +139,7 @@ class Lexer:
                     except EndOfStream:
                         return wordToken(s)
         except EndOfStream:
-            raise EndOfTokens()
+            return EndToken()
 
     def peek_token(self) -> Token:
         if self.save is not None:
@@ -1099,6 +1102,305 @@ def eval (
             raise BUG()
     raise BUG()
 
+@dataclass
+class Label:
+    target: int
+
+class I:
+    """The instructions for our stack VM."""
+    @dataclass
+    class PUSH:
+        what: Value
+
+    @dataclass
+    class UMINUS:
+        pass
+
+    @dataclass
+    class ADD:
+        pass
+
+    @dataclass
+    class SUB:
+        pass
+
+    @dataclass
+    class MUL:
+        pass
+
+    @dataclass
+    class DIV:
+        pass
+
+    @dataclass
+    class QUOT:
+        pass
+
+    @dataclass
+    class REM:
+        pass
+
+    @dataclass
+    class EXP:
+        pass
+
+    @dataclass
+    class EQ:
+        pass
+
+    @dataclass
+    class NEQ:
+        pass
+
+    @dataclass
+    class LT:
+        pass
+
+    @dataclass
+    class GT:
+        pass
+
+    @dataclass
+    class LE:
+        pass
+
+    @dataclass
+    class GE:
+        pass
+
+    @dataclass
+    class JMP:
+        label: Label
+
+    @dataclass
+    class JMP_IF_FALSE:
+        label: Label
+
+    @dataclass
+    class NOT:
+        pass
+
+    @dataclass
+    class HALT:
+        pass
+
+Instruction = (
+      I.PUSH
+    | I.ADD
+)
+
+@dataclass
+class ByteCode:
+    insns: List[Instruction]
+
+    def __init__(self):
+        self.insns = []
+
+    def label(self):
+        return Label(-1)
+
+    def insert_label(self, label):
+        label.target = len(self.insns)
+
+class VM:
+    bytecode: ByteCode
+    ip: int
+    data: List[Value]
+
+    def load(self, bytecode):
+        self.bytecode = bytecode
+        self.ip = 0
+
+    def top(self):
+        assert self.data.len > 0
+        return self.data[-1]
+
+    def execute(self):
+        while True:
+            assert self.ip < len(self.bytecode.insns)
+            match self.bytecode.insns[self.ip]:
+                case I.PUSH(val):
+                    self.data.append(val)
+                    self.ip += 1
+                case I.UMINUS():
+                    op = self.data.pop()
+                    self.data.append(-op)
+                    self.ip += 1
+                case I.ADD():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left+right)
+                    self.ip += 1
+                case I.SUB():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left-right)
+                    self.ip += 1
+                case I.MUL():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left*right)
+                    self.ip += 1
+                case I.DIV():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left/right)
+                    self.ip += 1
+                case I.EXP():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left**right)
+                    self.ip += 1
+                case I.QUOT():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    if left.denominator != 1 or right.denominator != 1:
+                        raise RunTimeError()
+                    left, right = int(left), int(right)
+                    self.data.append(Fraction(left // right, 1))
+                    self.ip += 1
+                case I.REM():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    if left.denominator != 1 or right.denominator != 1:
+                        raise RunTimeError()
+                    left, right = int(left), int(right)
+                    self.data.append(Fraction(left % right, 1))
+                    self.ip += 1
+                case I.EQ():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left==right)
+                    self.ip += 1
+                case I.NEQ():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left!=right)
+                    self.ip += 1
+                case I.LT():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left<right)
+                    self.ip += 1
+                case I.GT():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left>right)
+                    self.ip += 1
+                case I.LE():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left<=right)
+                    self.ip += 1
+                case I.GE():
+                    right = self.data.pop()
+                    left = self.data.pop()
+                    self.data.append(left>=right)
+                    self.ip += 1
+                case I.JMP(target):
+                    self.ip = target
+                case I.JMP_IF_FALSE(target):
+                    op = self.data.pop()
+                    if not op:
+                        self.ip = target
+                case I.NOT():
+                    op = self.data.pop()
+                    self.data.append(not op)
+                    self.ip += 1
+                case I.HALT():
+                    break
+
+def codegen (
+        program: AST,
+        environment = None
+) -> ByteCode:
+    if environment is None:
+        environment = ByteCode()
+
+    def emit(instruction):
+        environment.insns.append(instruction)
+
+    def emit_label(label):
+        environment.insert_label(label)
+
+    def codegen_(program):
+        return codegen(program, environment)
+
+    simple_ops = {
+        "+": I.ADD(),
+        "-": I.SUB(),
+        "*": I.MUL(),
+        "/": I.DIV(),
+        "quot": I.QUOT(),
+        "rem": I.REM(),
+        "<": I.LT(),
+        ">": I.GT(),
+        "≤": I.LE(),
+        "≥": I.GE(),
+        "=": I.EQ(),
+        "≠": I.NEQ(),
+        "not": I.NOT()
+    }
+
+    match program:
+        case NumLiteral(what) | BoolLiteral(what) | StrLiteral(what):
+            emit(I.PUSH(what))
+        case UnitLiteral():
+            emit(I.PUSH(None))
+        case BinOp(op, left, right) if op in simple_ops:
+            codegen_(left)
+            codegen_(right)
+            emit(simple_ops[op])
+            return environment
+        case UnOp("-", operand):
+            codegen_(operand)
+            emit(I.UMINUS())
+        case Seq(things):
+            for thing in things:
+                codegen_(thing)
+        case IfElse(cond, iftrue, iffalse):
+            E = environment.label()
+            F = environment.label()
+            codegen_(cond)
+            emit(I.JMP_IF_FALSE(F))
+            codegen_(iftrue)
+            emit(I.JMP(E))
+            emit_label(F)
+            codegen_(iffalse)
+            emit_label(E)
+        case While(cond, body):
+            B = environment.label()
+            E = environment.label()
+            emit_label(B)
+            codegen_(cond)
+            emit(I.JMP_IF_FALSE(E))
+            codegen_(body)
+            emit(I.JMP(B))
+            emit_label(E)
+        case TypeAssertion(expr, _):
+            codegen_(expr)
+
+    return environment
+
+def parse_string(s):
+    return Parser.from_lexer(Lexer.from_stream(Stream.from_string(s))).parse_expr()
+
+def compile(e):
+    return codegen(typecheck(resolve(parse_string(e))))
+
+def run(e):
+    return eval(typecheck(resolve(parse_string(e))))
+
+def run_file(f):
+    return run(open(f).read())
+
+def test_codegen():
+    print(compile("(2+3)*5+6/2"))
+    print(compile("if 2 > 3 then 5 else 6 end"))
+    print(compile("while 2 > 3 do 7+5 done"))
+
+test_codegen()
+
 def test_fact():
     p = Variable("p")
     i = Variable("i")
@@ -1148,17 +1450,6 @@ def test_fib_parse():
         )
     ).parse_expr()
     assert eval(typecheck(resolve(e))) == 89
-
-
-def parse_string(s):
-    return Parser.from_lexer(Lexer.from_stream(Stream.from_string(s))).parse_expr()
-
-
-def run(e):
-    return eval(typecheck(resolve(parse_string(e))))
-
-def run_file(f):
-    return run(open(f).read())
 
 def test_simple_resolve():
     assert 10 == run("let mut a = 5 in !a + !a end")
