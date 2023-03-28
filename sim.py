@@ -78,7 +78,7 @@ Token = (
 whitespace = " \t\n"
 symbol_operators = "+ - * / ^ < > ≥ ≤ = ≠ ~ ← ! ; :".split()
 punctuation = "( )".split()
-keywords = "if then else end while do done begin let mut fun in".split()
+keywords = "if then else end while do done begin let mut fun in num str bool unit".split()
 word_operators = "and or not quot rem".split()
 
 
@@ -241,7 +241,19 @@ class Parser:
                             return params
 
     def parse_type(self):
-        return self.parse_variable()
+        match self.lexer.peek_token():
+            case Keyword("num"):
+                self.lexer.advance()
+                return FractionType()
+            case Keyword("bool"):
+                self.lexer.advance()
+                return BoolType()
+            case Keyword("str"):
+                self.lexer.advance()
+                return StrType()
+            case Keyword("unit"):
+                self.lexer.advance()
+                return UnitType()
 
     def parse_fun(self):
         self.lexer.match_token(Keyword("fun"))
@@ -431,7 +443,7 @@ class Parser:
         match self.lexer.peek_token():
             case Operator(":"):
                 self.lexer.advance()
-                type = self.parse_logical_or()
+                type = self.parse_type()
                 return TypeAssertion(expr, type)
             case _:
                 return expr
@@ -522,19 +534,19 @@ class BinOp:
     right: 'AST'
     type: Optional[SimType] = None
 
-@dataclass
 class Variable:
+    __match_args__ = ("name",)
+
     name: str
     id: int
+    fdepth: int
+    localID: int
     type: Optional[SimType] = None
 
-    def __init__(self, name, id = None, type = None):
+    def __init__(self, name, type = None):
         self.name = name
-        if id is None:
-            self.id = fresh()
-        else:
-            self.id = id
         self.type = type
+        self.id = self.fdepth = self.localID = None
 
     def __hash__(self):
         return hash(self.id)
@@ -600,12 +612,6 @@ class TypeAssertion:
     expr: 'AST'
     type: SimType
 
-unique_id = -1
-
-def fresh():
-    global unique_id
-    return (unique_id := unique_id + 1)
-
 @dataclass
 class FunObject:
     params: List['AST']
@@ -650,6 +656,7 @@ class RunTimeError(Exception):
 T = TypeVar('T')
 U = TypeVar('U')
 Env = MutableMapping[U, T]
+
 @dataclass
 class EnvironmentType(MutableMapping[U, T]):
     envs: List[Env]
@@ -699,25 +706,43 @@ sc_ops         = [ "and", "or" ]
 def cmptype(t: SimType):
     return t in [FractionType(), StrType()]
 
-builtin_variables = {
-    #   name:  variable, type object, value object.
-    "num": (Variable("num"), FractionType(), None),
-    "bool": (Variable("bool"), BoolType(), None),
-    "str": (Variable("str"), StrType(), None),
-    "unit": (Variable("unit"), UnitType(), None),
-}
+class ResolveState:
+    env: EnvironmentType[str, Variable]
+    stk: List[List[int]]
+    lastID: int
+
+    def __init__(self):
+        self.env = EnvironmentType()
+        self.stk = [[0, -1]]
+        self.lastID = -1
+
+    def begin_fun(self):
+        self.stk.append([0, -1])
+
+    def end_fun(self):
+        self.stk.pop()
+
+    def handle_new(self, v):
+        v.fdepth = len(self.stk) - 1
+        v.id = self.lastID = self.lastID + 1
+        v.localID = self.stk[-1][1] = self.stk[-1][1] + 1
+        self.env[v.name] = v
+
+    def begin_scope(self):
+        self.env.begin_scope()
+
+    def end_scope(self):
+        self.env.end_scope()
 
 def resolve (
         program: AST,
-        environment: EnvironmentType[str, Variable] = None
+        rstate: ResolveState = None
 ) -> AST:
-    if environment is None:
-        environment = EnvironmentType()
-        for k, (v, _, _) in builtin_variables.items():
-            environment[k] = v
+    if rstate is None:
+        rstate = ResolveState()
 
     def resolve_(program):
-        return resolve(program, environment)
+        return resolve(program, rstate)
 
     match program:
         case NumLiteral() | BoolLiteral() | StrLiteral() | UnitLiteral():
@@ -730,23 +755,23 @@ def resolve (
             rright = resolve_(right)
             return BinOp(op, rleft, rright)
         case Variable(name):
-            if name not in environment:
+            if name not in rstate.env:
                 raise ResolveError()
-            declared = environment[name]
-            return Variable(name, declared.id)
+            declared = rstate.env[name]
+            return declared
         case Let(Variable(name) as v, e1, e2):
             re1 = resolve_(e1)
-            environment.begin_scope()
-            environment[name] = v
+            rstate.begin_scope()
+            rstate.handle_new(v)
             re2 = resolve_(e2)
-            environment.end_scope()
+            rstate.end_scope()
             return Let(v, re1, re2)
         case LetMut(Variable(name) as v, e1, e2):
             re1 = resolve_(e1)
-            environment.begin_scope()
-            environment[name] = v
+            rstate.begin_scope()
+            rstate.handle_new(v)
             re2 = resolve_(e2)
-            environment.end_scope()
+            rstate.end_scope()
             return LetMut(v, re1, re2)
         case IfElse(cond, true, false):
             rcond = resolve_(cond)
@@ -766,23 +791,25 @@ def resolve (
             rcond = resolve_(cond)
             rbody = resolve_(body)
             return While(rcond, rbody)
-        case LetFun(Variable(name) as v, params, rettype, body, expr):
-            environment.begin_scope()
-            environment[name] = v
-            environment.begin_scope()
+        case LetFun(Variable(name) as f, params, rettype, body, expr):
+            rstate.begin_scope() # Scope in which function exists.
+            rstate.handle_new(f)
+            rstate.begin_fun()
+            rstate.begin_scope() # Function body scope.
             rparams = []
             for param in params:
                 match param.expr:
-                    case Variable(name):
-                        environment[name] = param.expr
+                    case Variable(name) as v:
+                        rstate.handle_new(v)
+                        rparams.append(TypeAssertion(param.expr, param.type))
                     case _:
                         raise BUG()
-                rparams.append(TypeAssertion(param.expr, resolve_(param.type)))
-            rrettype = resolve_(rettype)
             rbody = resolve_(body)
-            environment.end_scope()
+            rstate.end_scope() # Function body scope.
+            rstate.end_fun()
             rexpr = resolve_(expr)
-            return LetFun(v, rparams, rrettype, rbody, rexpr)
+            rstate.end_scope() # Scope in which function exists.
+            return LetFun(f, rparams, rettype, rbody, rexpr)
         case FunCall(Variable(_) as v, args):
             rv = resolve_(v)
             rargs = []
@@ -791,8 +818,7 @@ def resolve (
             return FunCall(rv, rargs)
         case TypeAssertion(expr, type):
             rexpr = resolve_(expr)
-            rtype = resolve_(type)
-            return TypeAssertion(rexpr, rtype)
+            return TypeAssertion(rexpr, type)
         case _:
             raise BUG()
 
@@ -802,20 +828,9 @@ def typecheck (
 ):
     if environment is None:
         environment = EnvironmentType()
-        for _, (v, t, _) in builtin_variables.items():
-            environment[v] = t
 
     def typecheck_(p: AST):
         return typecheck(p, environment)
-
-    def typecheck_type(type: AST):
-        match type:
-            case Variable() as v:
-                if v not in environment:
-                    raise TypeError
-                return environment[v]
-            case _:
-                raise BUG()
 
     match program:
         case NumLiteral(value):
@@ -826,18 +841,19 @@ def typecheck (
             return StrLiteral(value, StrType())
         case UnitLiteral():
             return UnitLiteral(UnitType())
-        case Variable(name, id) as v:
+        case Variable() as v:
             match environment[v]:
                 case RefType() | FnType():
                     raise TypeError()
                 case t:
-                    return Variable(name, id, t)
-        case UnOp("!", Variable(name, id) as v):
-            if name not in environment:
+                    v.type = t
+                    return v
+        case UnOp("!", Variable() as v):
+            if v not in environment:
                 raise TypeError()
             match environment[v]:
                 case RefType(base) as type:
-                    return UnOp("!", Variable(name, id, type), base)
+                    return UnOp("!", v, base)
                 case _:
                     raise TypeError()
         case UnOp("!", other):
@@ -885,20 +901,22 @@ def typecheck (
             if tleft.type != BoolType() or tright.type != BoolType():
                 raise TypeError()
             return BinOp(op, tleft, tright, BoolType())
-        case Let(Variable(name, id) as v, e1, e2):
+        case Let(Variable() as v, e1, e2):
             te1 = typecheck_(e1)
+            v.type = te1.type
             environment.begin_scope()
             environment[v] = te1.type
             te2 = typecheck_(e2)
-            r = Let(Variable(name, id, te1.type), te1, te2, te2.type)
+            r = Let(v, te1, te2, te2.type)
             environment.end_scope()
             return r
-        case LetMut(Variable(name, id) as v, e1, e2):
+        case LetMut(Variable() as v, e1, e2):
             te1 = typecheck_(e1)
+            v.type = RefType(te1.type)
             environment.begin_scope()
-            environment[v] = RefType(te1.type)
+            environment[v] = v.type
             te2 = typecheck_(e2)
-            r = LetMut(Variable(name, id, RefType(te1.type)), te1, te2, te2.type)
+            r = LetMut(v, te1, te2, te2.type)
             environment.end_scope()
             return r
         case IfElse(condition, iftrue, iffalse):
@@ -913,7 +931,7 @@ def typecheck (
         case Seq(things):
             tthings = list(map(lambda t: typecheck_(t), things))
             return Seq(tthings, tthings[-1].type)
-        case Put(Variable(name, id) as v, val):
+        case Put(Variable() as v, val):
             if v not in environment:
                 raise TypeError()
             tv = environment[v]
@@ -922,7 +940,7 @@ def typecheck (
                 case RefType(base):
                     if base != tval.type:
                         raise TypeError()
-                    return Put(Variable(name, id, tv), tval, UnitType())
+                    return Put(v, tval, UnitType())
                 case _:
                     raise TypeError()
         case While(cond, body):
@@ -938,16 +956,14 @@ def typecheck (
             for param in params:
                 match param:
                     case TypeAssertion(Variable() as v, type):
-                        ttype = typecheck_type(type)
-                        v.type = ttype
+                        v.type = type
                         paramvars.append(v)
-                        paramtypes.append(ttype)
-                        tparams.append(TypeAssertion(v, ttype))
+                        paramtypes.append(type)
+                        tparams.append(TypeAssertion(v, type))
                     case _:
                         raise BUG()
             environment.begin_scope()
-            trettype = typecheck_type(rettype)
-            environment[fnv] = fnv.type = FnType(paramtypes, trettype)
+            environment[fnv] = fnv.type = FnType(paramtypes, rettype)
             environment.begin_scope()
             for v, type in zip(paramvars, paramtypes):
                 environment[v] = type
@@ -955,7 +971,7 @@ def typecheck (
             environment.end_scope()
             te = typecheck_(expr)
             environment.end_scope()
-            return LetFun(fnv, tparams, trettype, tb, te, te.type)
+            return LetFun(fnv, tparams, rettype, tb, te, te.type)
         case FunCall(Variable(_) as v, args):
             v.type = ftype = environment[v]
             targs = []
@@ -1199,8 +1215,12 @@ class ByteCode:
     def label(self):
         return Label(-1)
 
-    def insert_label(self, label):
+    def emit(self, instruction):
+        self.insns.append(instruction)
+
+    def emit_label(self, label):
         label.target = len(self.insns)
+
 
 class VM:
     bytecode: ByteCode
@@ -1210,12 +1230,13 @@ class VM:
     def load(self, bytecode):
         self.bytecode = bytecode
         self.ip = 0
+        self.data = []
 
-    def top(self):
-        assert self.data.len > 0
-        return self.data[-1]
+    def restart(self):
+        self.ip = 0
+        self.data = []
 
-    def execute(self):
+    def execute(self) -> Value:
         while True:
             assert self.ip < len(self.bytecode.insns)
             match self.bytecode.insns[self.ip]:
@@ -1297,34 +1318,33 @@ class VM:
                     left = self.data.pop()
                     self.data.append(left>=right)
                     self.ip += 1
-                case I.JMP(target):
-                    self.ip = target
-                case I.JMP_IF_FALSE(target):
+                case I.JMP(label):
+                    self.ip = label.target
+                case I.JMP_IF_FALSE(label):
                     op = self.data.pop()
                     if not op:
-                        self.ip = target
+                        self.ip = label.target
+                    else:
+                        self.ip += 1
                 case I.NOT():
                     op = self.data.pop()
                     self.data.append(not op)
                     self.ip += 1
                 case I.HALT():
-                    break
+                    return self.data.pop()
 
-def codegen (
+def codegen(program: AST) -> ByteCode:
+    code = ByteCode()
+    do_codegen(program, code)
+    code.emit(I.HALT())
+    return code
+
+def do_codegen (
         program: AST,
-        environment = None
+        code: ByteCode
 ) -> ByteCode:
-    if environment is None:
-        environment = ByteCode()
-
-    def emit(instruction):
-        environment.insns.append(instruction)
-
-    def emit_label(label):
-        environment.insert_label(label)
-
     def codegen_(program):
-        return codegen(program, environment)
+        return do_codegen(program, code)
 
     simple_ops = {
         "+": I.ADD(),
@@ -1344,62 +1364,73 @@ def codegen (
 
     match program:
         case NumLiteral(what) | BoolLiteral(what) | StrLiteral(what):
-            emit(I.PUSH(what))
+            code.emit(I.PUSH(what))
         case UnitLiteral():
-            emit(I.PUSH(None))
+            code.emit(I.PUSH(None))
         case BinOp(op, left, right) if op in simple_ops:
             codegen_(left)
             codegen_(right)
-            emit(simple_ops[op])
-            return environment
+            code.emit(simple_ops[op])
         case UnOp("-", operand):
             codegen_(operand)
-            emit(I.UMINUS())
+            code.emit(I.UMINUS())
         case Seq(things):
             for thing in things:
                 codegen_(thing)
         case IfElse(cond, iftrue, iffalse):
-            E = environment.label()
-            F = environment.label()
+            E = code.label()
+            F = code.label()
             codegen_(cond)
-            emit(I.JMP_IF_FALSE(F))
+            code.emit(I.JMP_IF_FALSE(F))
             codegen_(iftrue)
-            emit(I.JMP(E))
-            emit_label(F)
+            code.emit(I.JMP(E))
+            code.emit_label(F)
             codegen_(iffalse)
-            emit_label(E)
+            code.emit_label(E)
         case While(cond, body):
-            B = environment.label()
-            E = environment.label()
-            emit_label(B)
+            B = code.label()
+            E = code.label()
+            code.emit_label(B)
             codegen_(cond)
-            emit(I.JMP_IF_FALSE(E))
+            code.emit(I.JMP_IF_FALSE(E))
             codegen_(body)
-            emit(I.JMP(B))
-            emit_label(E)
+            code.emit(I.JMP(B))
+            code.emit_label(E)
         case TypeAssertion(expr, _):
             codegen_(expr)
-
-    return environment
+    return code
 
 def parse_string(s):
     return Parser.from_lexer(Lexer.from_stream(Stream.from_string(s))).parse_expr()
 
-def compile(e):
-    return codegen(typecheck(resolve(parse_string(e))))
+def parse_file(f):
+    return Parser.from_lexer(Lexer.from_stream(Stream.from_file(f))).parse_expr()
 
-def run(e):
-    return eval(typecheck(resolve(parse_string(e))))
+def verify(program):
+    return typecheck(resolve(program))
+
+def compile(program):
+    return codegen(typecheck(resolve(program)))
+
+def run(program):
+    return eval(typecheck(resolve(program)))
 
 def run_file(f):
-    return run(open(f).read())
+    return run(parse_file(f))
+
+def test_resolve():
+    print(resolve(parse_string("let fun f(x : num) : num = let a = 1 in x + a end in f(0) end")))
 
 def test_codegen():
-    print(compile("(2+3)*5+6/2"))
-    print(compile("if 2 > 3 then 5 else 6 end"))
-    print(compile("while 2 > 3 do 7+5 done"))
-
-test_codegen()
+    programs = {
+        "(2+3)*5+6/2": 28,
+        "if 2 > 3 then 5 else 6 end": 6,
+        "if 3 > 2 then 5 else 6 end": 5
+    }
+    v = VM()
+    for p, e in programs.items():
+        v.load(compile(parse_string(p)))
+        assert e == v.execute()
 
 def test_fact():
     p = Variable("p")
@@ -1415,15 +1446,15 @@ def test_fact():
                 ),
                 UnOp("!", p)
             ])))
-    assert eval(typecheck(g)) == 1*2*3*4*5*6*7*8*9*10
+    assert run(g) == 1*2*3*4*5*6*7*8*9*10
 
 def test_mut_immut():
     import pytest
     # Trying to mutate an immutable variable.
     p = Variable("p")
-    h = Let(p, NumLiteral(0), Put(p, BinOp("+", UnOp("!", p), 1)))
+    h = Let(p, NumLiteral(0), Put(p, BinOp("+", UnOp("!", p), NumLiteral(1))))
     with pytest.raises(TypeError):
-        typecheck(h)
+        verify(h)
 
 def test_fib():
     f0 = Variable("f0")
@@ -1439,20 +1470,13 @@ def test_fib():
     e = LetMut(f0, NumLiteral(0),
         LetMut(f1, NumLiteral(1),
         LetMut(i, NumLiteral(1), Seq([loop, UnOp("!", f1)]))))
-    assert eval(typecheck(e)) == 89
+    assert run(e) == 89
 
 def test_fib_parse():
-    e = Parser.from_lexer (
-        Lexer.from_stream (
-            Stream.from_file (
-                "samples/fib10.sim"
-            )
-        )
-    ).parse_expr()
-    assert eval(typecheck(resolve(e))) == 89
+    assert run_file("samples/fib10.sim") == 89
 
 def test_simple_resolve():
-    assert 10 == run("let mut a = 5 in !a + !a end")
+    assert 10 == run(parse_string("let mut a = 5 in !a + !a end"))
 
 def test_euler1():
     def euler1():
@@ -1465,19 +1489,21 @@ def test_euler1():
     assert euler1() == run_file("samples/euler1.sim")
 
 def test_const_fn():
-    assert 0 == run("let fun f(): num = 0 in f() end")
+    assert 0 == run(parse_string("let fun f(): num = 0 in f() end"))
+
+test_const_fn()
 
 def test_id_fn():
-    assert 3 == run("let fun id(n: num): num = n in id(1) + id(2) end")
+    assert 3 == run(parse_string("let fun id(n: num): num = n in id(1) + id(2) end"))
 
 def test_inc_fn():
-    assert 3 == run("let fun inc(n: num): num = n+1 in inc(0) + inc(1) end")
+    assert 3 == run(parse_string("let fun inc(n: num): num = n+1 in inc(0) + inc(1) end"))
 
 def test_multi_param_fn():
-    assert 10 == run("let fun lin(a: num, x: num, b: num): num = a * x + b in lin(2, 3, 4) end")
+    assert 10 == run(parse_string("let fun lin(a: num, x: num, b: num): num = a * x + b in lin(2, 3, 4) end"))
 
 def test_recursive_fn():
-    assert 3628800 == run("let fun fact(n: num): num = if n = 0 then 1 else n * fact(n-1) end in fact(10) end")
+    assert 3628800 == run(parse_string("let fun fact(n: num): num = if n = 0 then 1 else n * fact(n-1) end in fact(10) end"))
 
 def test_euler2():
     def euler2():
