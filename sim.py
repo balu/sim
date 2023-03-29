@@ -1342,9 +1342,9 @@ def codegen(program: AST) -> ByteCode:
 def do_codegen (
         program: AST,
         code: ByteCode
-) -> ByteCode:
+) -> None:
     def codegen_(program):
-        return do_codegen(program, code)
+        do_codegen(program, code)
 
     simple_ops = {
         "+": I.ADD(),
@@ -1398,7 +1398,6 @@ def do_codegen (
             code.emit_label(E)
         case TypeAssertion(expr, _):
             codegen_(expr)
-    return code
 
 def parse_string(s):
     return Parser.from_lexer(Lexer.from_stream(Stream.from_string(s))).parse_expr()
