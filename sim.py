@@ -1193,7 +1193,19 @@ class I:
         label: Label
 
     @dataclass
+    class JMP_IF_TRUE:
+        label: Label
+
+    @dataclass
     class NOT:
+        pass
+
+    @dataclass
+    class DUP:
+        pass
+
+    @dataclass
+    class POP:
         pass
 
     @dataclass
@@ -1326,9 +1338,23 @@ class VM:
                         self.ip = label.target
                     else:
                         self.ip += 1
+                case I.JMP_IF_TRUE(label):
+                    op = self.data.pop()
+                    if op:
+                        self.ip = label.target
+                    else:
+                        self.ip += 1
                 case I.NOT():
                     op = self.data.pop()
                     self.data.append(not op)
+                    self.ip += 1
+                case I.DUP():
+                    op = self.data.pop()
+                    self.data.append(op)
+                    self.data.append(op)
+                    self.ip += 1
+                case I.POP():
+                    self.data.pop()
                     self.ip += 1
                 case I.HALT():
                     return self.data.pop()
@@ -1371,6 +1397,22 @@ def do_codegen (
             codegen_(left)
             codegen_(right)
             code.emit(simple_ops[op])
+        case BinOp("and", left, right):
+            E = code.label()
+            codegen_(left)
+            code.emit(I.DUP())
+            code.emit(I.JMP_IF_FALSE(E))
+            code.emit(I.POP())
+            codegen_(right)
+            code.emit_label(E)
+        case BinOp("or", left, right):
+            E = code.label()
+            codegen_(left)
+            code.emit(I.DUP())
+            code.emit(I.JMP_IF_TRUE(E))
+            code.emit(I.POP())
+            codegen_(right)
+            code.emit_label(E)
         case UnOp("-", operand):
             codegen_(operand)
             code.emit(I.UMINUS())
@@ -1424,12 +1466,21 @@ def test_codegen():
     programs = {
         "(2+3)*5+6/2": 28,
         "if 2 > 3 then 5 else 6 end": 6,
-        "if 3 > 2 then 5 else 6 end": 5
+        "if 3 > 2 then 5 else 6 end": 5,
+        "5 > 7 and 6 > 5": False,
+        "5 > 7 and 6 < 5": False,
+        "5 < 7 or 6 > 5": True,
+        "5 > 7 or 6 > 5": True,
+        "5 > 7 or 5 > 5": False,
     }
     v = VM()
     for p, e in programs.items():
         v.load(compile(parse_string(p)))
         assert e == v.execute()
+
+def print_codegen():
+    print(compile(parse_string("6 > 7 and 3 > 2")))
+    print(compile(parse_string("6 > 7 or 3 > 2")))
 
 def test_fact():
     p = Variable("p")
