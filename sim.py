@@ -554,6 +554,9 @@ class Variable:
     def __eq__(self, other):
         return self.id == other.id
 
+    def __repr__(self):
+        return f"{self.name}::{self.id}::{self.localID}"
+
 @dataclass
 class Let:
     var: 'AST'
@@ -1209,12 +1212,41 @@ class I:
         pass
 
     @dataclass
+    class LOAD:
+        localID: int
+
+    @dataclass
+    class STORE:
+        localID: int
+
+    @dataclass
     class HALT:
         pass
 
 Instruction = (
       I.PUSH
     | I.ADD
+    | I.SUB
+    | I.MUL
+    | I.DIV
+    | I.QUOT
+    | I.REM
+    | I.NOT
+    | I.UMINUS
+    | I.JMP
+    | I.JMP_IF_FALSE
+    | I.JMP_IF_TRUE
+    | I.DUP
+    | I.POP
+    | I.HALT
+    | I.EQ
+    | I.NEQ
+    | I.LT
+    | I.GT
+    | I.LE
+    | I.GE
+    | I.LOAD
+    | I.STORE
 )
 
 @dataclass
@@ -1234,19 +1266,27 @@ class ByteCode:
         label.target = len(self.insns)
 
 
+class Frame:
+    locals: List[Value]
+
+    def __init__(self):
+        MAX_LOCALS = 32
+        self.locals = [None] * MAX_LOCALS
+
 class VM:
     bytecode: ByteCode
     ip: int
     data: List[Value]
+    currentFrame: Frame
 
     def load(self, bytecode):
         self.bytecode = bytecode
-        self.ip = 0
-        self.data = []
+        self.restart()
 
     def restart(self):
         self.ip = 0
         self.data = []
+        self.currentFrame = Frame()
 
     def execute(self) -> Value:
         while True:
@@ -1356,6 +1396,13 @@ class VM:
                 case I.POP():
                     self.data.pop()
                     self.ip += 1
+                case I.LOAD(localID):
+                    self.data.append(self.currentFrame.locals[localID])
+                    self.ip += 1
+                case I.STORE(localID):
+                    v = self.data.pop()
+                    self.currentFrame.locals[localID] = v
+                    self.ip += 1
                 case I.HALT():
                     return self.data.pop()
 
@@ -1438,6 +1485,15 @@ def do_codegen (
             codegen_(body)
             code.emit(I.JMP(B))
             code.emit_label(E)
+        case (Variable() as v) | UnOp("!", Variable() as v):
+            code.emit(I.LOAD(v.localID))
+        case Put(Variable() as v, e):
+            codegen_(e)
+            code.emit(I.STORE(v.localID))
+        case Let(Variable() as v, e1, e2) | LetMut(Variable() as v, e1, e2):
+            codegen_(e1)
+            code.emit(I.STORE(v.localID))
+            codegen_(e2)
         case TypeAssertion(expr, _):
             codegen_(expr)
 
@@ -1472,6 +1528,8 @@ def test_codegen():
         "5 < 7 or 6 > 5": True,
         "5 > 7 or 6 > 5": True,
         "5 > 7 or 5 > 5": False,
+        "let x = 5 in x + x end": 10,
+        "let x = 5 in let y = 6 in x*x + y*y + 2*x*y end end": 121
     }
     v = VM()
     for p, e in programs.items():
@@ -1479,8 +1537,9 @@ def test_codegen():
         assert e == v.execute()
 
 def print_codegen():
-    print(compile(parse_string("6 > 7 and 3 > 2")))
-    print(compile(parse_string("6 > 7 or 3 > 2")))
+    print(compile(parse_string("let x = 5 in let y = 6 in x + y*x + x*y end end")))
+
+print_codegen()
 
 def test_fact():
     p = Variable("p")
