@@ -1265,6 +1265,17 @@ class ByteCode:
     def emit_label(self, label):
         label.target = len(self.insns)
 
+def print_bytecode(code: ByteCode):
+    for i, insn in enumerate(code.insns):
+        match insn:
+            case I.JMP(Label(offset)) | I.JMP_IF_TRUE(Label(offset)) | I.JMP_IF_FALSE(Label(offset)):
+                print(f"{i:=4} {insn.__class__.__name__:<15} {offset}")
+            case I.LOAD(localID) | I.STORE(localID):
+                print(f"{i:=4} {insn.__class__.__name__:<15} {localID}")
+            case I.PUSH(value):
+                print(f"{i:=4} {'PUSH':<15} {value}")
+            case _:
+                print(f"{i:=4} {insn.__class__.__name__:<15}")
 
 class Frame:
     locals: List[Value]
@@ -1537,7 +1548,7 @@ def test_codegen():
         assert e == v.execute()
 
 def print_codegen():
-    print(compile(parse_string("let x = 5 in let y = 6 in x + y*x + x*y end end")))
+    print_bytecode(compile(parse_file("samples/euler2.sim")))
 
 print_codegen()
 
