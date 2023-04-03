@@ -928,9 +928,9 @@ def typecheck (
                 raise TypeError()
             tt = typecheck_(iftrue)
             tf = typecheck_(iffalse)
-            if tt.type == tf.type:
-                return IfElse(tc, tt, tf, tt.type)
-            return IfElse(tc, tt, tf, UnitType())
+            if tt.type != tf.type:
+                raise TypeError()
+            return IfElse(tc, tt, tf, tt.type)
         case Seq(things):
             tthings = list(map(lambda t: typecheck_(t), things))
             return Seq(tthings, tthings[-1].type)
@@ -1475,8 +1475,12 @@ def do_codegen (
             codegen_(operand)
             code.emit(I.UMINUS())
         case Seq(things):
-            for thing in things:
+            if not things: raise BUG()
+            last, rest = things[-1], things[:-1]
+            for thing in rest:
                 codegen_(thing)
+                code.emit(I.POP())
+            codegen_(last)
         case IfElse(cond, iftrue, iffalse):
             E = code.label()
             F = code.label()
@@ -1494,13 +1498,16 @@ def do_codegen (
             codegen_(cond)
             code.emit(I.JMP_IF_FALSE(E))
             codegen_(body)
+            code.emit(I.POP())
             code.emit(I.JMP(B))
             code.emit_label(E)
+            code.emit(I.PUSH(None))
         case (Variable() as v) | UnOp("!", Variable() as v):
             code.emit(I.LOAD(v.localID))
         case Put(Variable() as v, e):
             codegen_(e)
             code.emit(I.STORE(v.localID))
+            code.emit(I.PUSH(None))
         case Let(Variable() as v, e1, e2) | LetMut(Variable() as v, e1, e2):
             codegen_(e1)
             code.emit(I.STORE(v.localID))
