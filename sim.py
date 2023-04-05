@@ -620,7 +620,11 @@ class FunObject:
     params: List['AST']
     body: 'AST'
 
-Value = Fraction | bool | str | None
+@dataclass
+class CompiledFunction:
+    entry: int
+
+Value = Fraction | bool | str | None | CompiledFunction
 
 AST = (
       NumLiteral
@@ -1220,6 +1224,18 @@ class I:
         localID: int
 
     @dataclass
+    class PUSHFN:
+        entry: Label
+
+    @dataclass
+    class CALL:
+        pass
+
+    @dataclass
+    class RETURN:
+        pass
+
+    @dataclass
     class HALT:
         pass
 
@@ -1247,6 +1263,9 @@ Instruction = (
     | I.GE
     | I.LOAD
     | I.STORE
+    | I.PUSHFN
+    | I.CALL
+    | I.RETURN
 )
 
 @dataclass
@@ -1274,15 +1293,21 @@ def print_bytecode(code: ByteCode):
                 print(f"{i:=4} {insn.__class__.__name__:<15} {localID}")
             case I.PUSH(value):
                 print(f"{i:=4} {'PUSH':<15} {value}")
+            case I.PUSHFN(Label(offset)):
+                print(f"{i:=4} {'PUSHFN':<15} {offset}")
             case _:
                 print(f"{i:=4} {insn.__class__.__name__:<15}")
 
 class Frame:
     locals: List[Value]
+    retaddr: int
+    dynamicLink: 'Frame'
 
-    def __init__(self):
+    def __init__(self, retaddr = -1, dynamicLink = None):
         MAX_LOCALS = 32
         self.locals = [None] * MAX_LOCALS
+        self.retaddr = retaddr
+        self.dynamicLink = dynamicLink
 
 class VM:
     bytecode: ByteCode
@@ -1306,6 +1331,19 @@ class VM:
                 case I.PUSH(val):
                     self.data.append(val)
                     self.ip += 1
+                case I.PUSHFN(Label(offset)):
+                    self.data.append(CompiledFunction(offset))
+                    self.ip += 1
+                case I.CALL():
+                    self.currentFrame = Frame (
+                        retaddr=self.ip + 1,
+                        dynamicLink=self.currentFrame
+                    )
+                    cf = self.data.pop()
+                    self.ip = cf.entry
+                case I.RETURN():
+                    self.ip = self.currentFrame.retaddr
+                    self.currentFrame = self.currentFrame.dynamicLink
                 case I.UMINUS():
                     op = self.data.pop()
                     self.data.append(-op)
@@ -1512,6 +1550,20 @@ def do_codegen (
             codegen_(e1)
             code.emit(I.STORE(v.localID))
             codegen_(e2)
+        case LetFun(fv, _, _, body, expr):
+            EXPRBEGIN = code.label()
+            FBEGIN = code.label()
+            code.emit(I.JMP(EXPRBEGIN))
+            code.emit_label(FBEGIN)
+            codegen_(body)
+            code.emit(I.RETURN())
+            code.emit_label(EXPRBEGIN)
+            code.emit(I.PUSHFN(FBEGIN))
+            code.emit(I.STORE(fv.localID))
+            codegen_(expr)
+        case FunCall(fn, _):
+            code.emit(I.LOAD(fn.localID))
+            code.emit(I.CALL())
         case TypeAssertion(expr, _):
             codegen_(expr)
 
@@ -1547,7 +1599,8 @@ def test_codegen():
         "5 > 7 or 6 > 5": True,
         "5 > 7 or 5 > 5": False,
         "let x = 5 in x + x end": 10,
-        "let x = 5 in let y = 6 in x*x + y*y + 2*x*y end end": 121
+        "let x = 5 in let y = 6 in x*x + y*y + 2*x*y end end": 121,
+        open("samples/fnnoparam.sim", "r").read(): 26
     }
     v = VM()
     for p, e in programs.items():
@@ -1555,7 +1608,7 @@ def test_codegen():
         assert e == v.execute()
 
 def print_codegen():
-    print_bytecode(compile(parse_file("samples/euler2.sim")))
+    print_bytecode(compile(parse_file("samples/fnnoparam.sim")))
 
 print_codegen()
 

@@ -1,0 +1,4 @@
+let fun f(): num = let x = 5 in x + x end
+in
+  let x = 6 in f() + x + f() end
+end
