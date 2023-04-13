@@ -1550,18 +1550,26 @@ def do_codegen (
             codegen_(e1)
             code.emit(I.STORE(v.localID))
             codegen_(e2)
-        case LetFun(fv, _, _, body, expr):
+        case LetFun(fv, params, _, body, expr):
             EXPRBEGIN = code.label()
             FBEGIN = code.label()
             code.emit(I.JMP(EXPRBEGIN))
             code.emit_label(FBEGIN)
+            for param in reversed(params):
+                match param:
+                    case TypeAssertion(Variable() as v, _):
+                        code.emit(I.STORE(v.localID))
+                    case _:
+                        raise BUG()
             codegen_(body)
             code.emit(I.RETURN())
             code.emit_label(EXPRBEGIN)
             code.emit(I.PUSHFN(FBEGIN))
             code.emit(I.STORE(fv.localID))
             codegen_(expr)
-        case FunCall(fn, _):
+        case FunCall(fn, args):
+            for arg in args:
+                codegen_(arg)
             code.emit(I.LOAD(fn.localID))
             code.emit(I.CALL())
         case TypeAssertion(expr, _):
@@ -1600,7 +1608,9 @@ def test_codegen():
         "5 > 7 or 5 > 5": False,
         "let x = 5 in x + x end": 10,
         "let x = 5 in let y = 6 in x*x + y*y + 2*x*y end end": 121,
-        open("samples/fnnoparam.sim", "r").read(): 26
+        open("samples/fnnoparam.sim", "r").read(): 26,
+        open("samples/fnparam.sim", "r").read(): 15,
+        open("samples/fnparam2.sim", "r").read(): 10
     }
     v = VM()
     for p, e in programs.items():
@@ -1608,7 +1618,7 @@ def test_codegen():
         assert e == v.execute()
 
 def print_codegen():
-    print_bytecode(compile(parse_file("samples/fnnoparam.sim")))
+    print_bytecode(compile(parse_file("samples/fnparam2.sim")))
 
 print_codegen()
 

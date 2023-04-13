@@ -1,0 +1,5 @@
+let fun diffmod(a : num, b : num) : num =
+  if a-b > 0 then a-b else b-a end
+in
+  diffmod(5, 10) + diffmod(10, 5)
+end
