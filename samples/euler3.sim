@@ -1,7 +1,7 @@
 let fun isprime(n : num) : bool =
   let fun go(d : num) : bool = d * d > n or n rem d ≠ 0 and go(d+1) in go(2) end
 in
-  let innum = 35 in
+  let innum = 2*3*5*7*11*11*13 in
   let fun go(cur : num, max : num) : num =
     if cur > innum then max
     else

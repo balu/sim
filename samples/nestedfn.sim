@@ -1,0 +1,7 @@
+let fun isprime(n : num) : bool =
+  let fun go(d : num) : bool =
+    d * d > n or n rem d ≠ 0 and go(d+1)
+  in go(2) end
+in
+  isprime(7) and isprime(11) and isprime(15)
+end
